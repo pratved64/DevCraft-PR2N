@@ -2,430 +2,371 @@
 
 import React, { useState, useEffect } from 'react';
 import {
-  Users, Zap, Clock, TrendingUp, Activity, 
-  Share2, ArrowUpRight, ArrowDownRight, 
-  Download, Filter, RefreshCw, Hexagon,
-  DollarSign, Target, BarChart3, Wifi
+  Users, Clock, Activity, 
+  RefreshCw, Terminal, Cpu, 
+  Target, MapPin, Wifi
 } from 'lucide-react';
 
-// --- STYLES & ANIMATIONS ---
+// --- PIXEL ART STYLES ---
 const styles = `
-  @keyframes scanline {
-    0% { transform: translateY(-100%); }
-    100% { transform: translateY(100%); }
+  @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+  :root {
+    --term-bg: #050a05;
+    --term-grid: #1a1a1a;
+    --term-border: #333;
   }
-  @keyframes pulse-ring {
-    0% { transform: scale(0.8); opacity: 0.5; }
-    100% { transform: scale(2); opacity: 0; }
-  }
-  @keyframes graph-grow {
-    from { height: 0; opacity: 0; }
-    to { height: var(--target-height); opacity: 1; }
-  }
-  
-  .glass-card {
-    background: rgba(13, 18, 30, 0.7);
-    backdrop-filter: blur(12px);
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    box-shadow: 0 4px 30px rgba(0, 0, 0, 0.3);
+
+  .font-pixel { font-family: 'Press Start 2P', cursive; }
+  .font-console { font-family: 'VT323', monospace; }
+
+  /* CRT MONITOR EFFECT */
+  .crt-container {
+    background-color: var(--term-bg);
+    min-height: 100vh;
     position: relative;
-    overflow: hidden;
-    transition: all 0.3s ease;
+    overflow-x: hidden;
+    color: #eee;
+  }
+
+  .scanlines {
+    background: linear-gradient(
+      to bottom,
+      rgba(255,255,255,0),
+      rgba(255,255,255,0) 50%,
+      rgba(0,0,0,0.1) 50%,
+      rgba(0,0,0,0.1)
+    );
+    background-size: 100% 4px;
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 50;
+    opacity: 0.6;
+  }
+
+  /* RETRO CARD */
+  .pixel-card {
+    background: #0f0f0f;
+    border: 2px solid #444;
+    box-shadow: 4px 4px 0px #222;
+    position: relative;
+    transition: all 0.2s;
   }
   
-  .glass-card:hover {
-    border-color: rgba(6, 182, 212, 0.3);
-    box-shadow: 0 0 30px rgba(6, 182, 212, 0.15);
-    transform: translateY(-2px);
+  .pixel-card:hover {
+    border-color: #666;
+    transform: translate(-1px, -1px);
+    box-shadow: 5px 5px 0px #222;
   }
 
-  .neon-text {
-    text-shadow: 0 0 10px rgba(6, 182, 212, 0.5);
+  /* HEATMAP GRID */
+  .heatmap-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 4px;
   }
-
-  .scanline-overlay {
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(to bottom, transparent 50%, rgba(0, 0, 0, 0.3) 51%);
-    background-size: 100% 4px;
-    pointer-events: none;
+  
+  .heat-cell {
+    aspect-ratio: 1;
+    position: relative;
+    transition: background-color 1s ease;
+  }
+  
+  .heat-cell.stall {
+    background-color: #eee;
+    border: 2px solid #fff;
+    box-shadow: 0 0 10px #fff;
     z-index: 10;
-    opacity: 0.3;
   }
 
-  /* Cyberpunk Corner Accents */
-  .corner-accent {
-    position: absolute;
-    width: 8px;
-    height: 8px;
-    border-color: rgba(6, 182, 212, 0.5);
-    transition: all 0.3s ease;
+  .heat-low { background-color: #0891b2; opacity: 0.3; }   /* Cyan */
+  .heat-med { background-color: #ca8a04; opacity: 0.6; }   /* Yellow */
+  .heat-high { background-color: #dc2626; opacity: 0.8; }  /* Red */
+
+  /* UI ELEMENTS */
+  .pixel-btn {
+    border: 2px solid #444;
+    background: #222;
+    color: #eee;
+    box-shadow: 2px 2px 0px #000;
+    transition: all 0.1s;
+    cursor: pointer;
   }
-  .glass-card:hover .corner-accent {
-    width: 12px;
-    height: 12px;
-    border-color: #22d3ee;
+  .pixel-btn:hover {
+    background: #333;
+    color: #fff;
+    border-color: #666;
   }
-  .c-tl { top: 0; left: 0; border-top: 2px solid; border-left: 2px solid; }
-  .c-tr { top: 0; right: 0; border-top: 2px solid; border-right: 2px solid; }
-  .c-bl { bottom: 0; left: 0; border-bottom: 2px solid; border-left: 2px solid; }
-  .c-br { bottom: 0; right: 0; border-bottom: 2px solid; border-right: 2px solid; }
+
+  .blink { animation: blink 1s step-end infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .retro-bar-cyan { background: repeating-linear-gradient(45deg, #0e7490, #0e7490 2px, #22d3ee 2px, #22d3ee 4px); }
+  .retro-bar-purple { background: repeating-linear-gradient(45deg, #7e22ce, #7e22ce 2px, #d8b4fe 2px, #d8b4fe 4px); }
+  .retro-bar-orange { background: repeating-linear-gradient(45deg, #c2410c, #c2410c 2px, #fdba74 2px, #fdba74 4px); }
 `;
+
+// --- MOCK DATA ---
+const SPONSOR_DATA = {
+  name: "TechCorp",
+  id: "SPON-882-X",
+  category: "SOFTWARE_ENG",
+  location: "ZONE_A_12",
+};
+
+const LIVE_LOGS = [
+  { time: "14:32:05", msg: "USER_882 SCANNED QR", type: "SCAN", color: "text-cyan-400" },
+  { time: "14:31:45", msg: "USER_104 REDEEMED SWAG", type: "REDEEM", color: "text-purple-400" },
+  { time: "14:30:12", msg: "CROWD DENSITY SPIKE > 80%", type: "ALERT", color: "text-red-500 blink" },
+  { time: "14:28:55", msg: "USER_993 SCANNED QR", type: "SCAN", color: "text-cyan-400" },
+  { time: "14:25:20", msg: "INVENTORY SYNC COMPLETE", type: "SYS", color: "text-gray-400" },
+  { time: "14:24:10", msg: "USER_771 ENTERED ZONE", type: "ENTER", color: "text-emerald-500" },
+  { time: "14:22:00", msg: "USER_552 LEFT ZONE", type: "EXIT", color: "text-gray-500" },
+  { time: "14:20:15", msg: "DATA_PACKET_UPLOADED", type: "SYS", color: "text-gray-400" },
+];
 
 // --- SUB-COMPONENTS ---
 
-const CardHeader = ({ title, icon: Icon, sub, highlight }: any) => (
-  <div className="flex justify-between items-start mb-6 relative z-20">
-    <div className="flex items-center gap-3">
-      <div className={`p-2 rounded-lg bg-white/5 border border-white/10 ${highlight ? 'text-cyan-400 shadow-[0_0_15px_rgba(34,211,238,0.2)]' : 'text-gray-400'}`}>
-        <Icon size={18} />
-      </div>
-      <div>
-        <h3 className="text-sm font-bold text-gray-200 uppercase tracking-wider">{title}</h3>
-        {sub && <p className="text-[10px] text-gray-500 font-mono mt-0.5">{sub}</p>}
-      </div>
-    </div>
-    <div className="flex gap-1">
-       <div className="w-1 h-1 bg-gray-600 rounded-full"></div>
-       <div className="w-1 h-1 bg-gray-600 rounded-full"></div>
-    </div>
-  </div>
-);
-
-const KPICard = ({ label, value, trend, trendUp, icon: Icon, delay }: any) => (
-  <div className={`glass-card rounded-2xl p-5 flex flex-col justify-between h-32 animate-fade-in`} style={{animationDelay: delay}}>
-    <div className="corner-accent c-tl"></div>
-    <div className="corner-accent c-br"></div>
-    
+const KPICard = ({ label, value, sub, icon: Icon, colorClass }: any) => (
+  <div className={`pixel-card p-4 flex flex-col justify-between h-28 border-l-4 ${colorClass}`}>
     <div className="flex justify-between items-start">
-      <span className="text-xs font-mono text-gray-400 uppercase">{label}</span>
+      <span className="text-[10px] font-pixel text-gray-400 uppercase">{label}</span>
       <Icon size={16} className="text-gray-500" />
     </div>
-    
     <div>
-      <div className="text-3xl font-bold text-white tracking-tight flex items-baseline gap-2">
-        {value}
-        {trend && (
-          <span className={`text-xs font-medium flex items-center px-1.5 py-0.5 rounded ${trendUp ? 'bg-emerald-500/10 text-emerald-400' : 'bg-rose-500/10 text-rose-400'}`}>
-            {trendUp ? <ArrowUpRight size={10} className="mr-1"/> : <ArrowDownRight size={10} className="mr-1"/>}
-            {trend}
-          </span>
-        )}
-      </div>
+      <div className="text-2xl font-console text-white tracking-widest">{value}</div>
+      {sub && <div className={`text-[10px] font-console mt-1 uppercase ${colorClass.replace('border-', 'text-')}`}>{sub}</div>}
     </div>
   </div>
 );
 
-const ProgressBar = ({ label, value, color = "bg-cyan-500", track = "bg-gray-800" }: any) => (
-  <div className="group cursor-pointer">
-    <div className="flex justify-between text-xs mb-1.5">
-      <span className="text-gray-400 group-hover:text-white transition-colors">{label}</span>
-      <span className="font-mono text-gray-500 group-hover:text-cyan-400 transition-colors">{value}%</span>
-    </div>
-    <div className={`h-1.5 w-full ${track} rounded-full overflow-hidden`}>
-      <div 
-        className={`h-full ${color} transition-all duration-1000 relative`} 
-        style={{ width: `${value}%` }}
-      >
-        <div className="absolute right-0 top-0 bottom-0 w-[2px] bg-white opacity-50 shadow-[0_0_10px_white]"></div>
+// --- HEATMAP COMPONENT ---
+const StallHeatmap = () => {
+  // Simulating 5x5 grid around the stall
+  // Index 12 is the center (The Stall)
+  const [gridData, setGridData] = useState<string[]>([]);
+
+  useEffect(() => {
+    // Generate random heat signature
+    const generateHeat = () => {
+      const data = Array(25).fill('').map((_, i) => {
+        if (i === 12) return 'stall';
+        const rand = Math.random();
+        if (rand > 0.8) return 'heat-high';
+        if (rand > 0.5) return 'heat-med';
+        return 'heat-low';
+      });
+      setGridData(data);
+    };
+
+    generateHeat();
+    const interval = setInterval(generateHeat, 2000); // Live update
+    return () => clearInterval(interval);
+  }, []);
+
+  return (
+    <div className="flex flex-col h-full p-2">
+      <div className="flex justify-between items-end mb-4 border-b-2 border-[#333] pb-2">
+        <h3 className="font-pixel text-xs text-orange-400">ZONE_DENSITY</h3>
+        <span className="font-console text-xs text-gray-500 animate-pulse">LIVE SENSOR</span>
+      </div>
+      
+      <div className="bg-[#050505] p-2 border-2 border-[#333] relative flex-1 flex flex-col justify-center">
+        {/* Radar Line Animation */}
+        <div className="absolute w-full h-[2px] bg-cyan-500/20 top-0 animate-[scanline_3s_linear_infinite] z-20 pointer-events-none"></div>
+
+        <div className="heatmap-grid w-full max-w-[220px] mx-auto">
+          {gridData.map((status, i) => (
+            <div key={i} className={`heat-cell ${status}`}>
+              {status === 'stall' && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <MapPin size={16} className="text-black animate-bounce" fill="black" />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* Legend */}
+        <div className="flex justify-center gap-4 mt-6 text-[8px] font-pixel text-gray-500">
+          <div className="flex items-center gap-1"><div className="w-2 h-2 bg-[#dc2626]"></div> CRITICAL</div>
+          <div className="flex items-center gap-1"><div className="w-2 h-2 bg-[#ca8a04]"></div> HIGH</div>
+          <div className="flex items-center gap-1"><div className="w-2 h-2 bg-[#0891b2]"></div> LOW</div>
+        </div>
       </div>
     </div>
-  </div>
-);
+  );
+};
 
 // --- MAIN PAGE COMPONENT ---
 
-export default function SponsorPage() {
-  const [loading, setLoading] = useState(true);
+export default function SingleSponsorPage() {
+  const [booting, setBooting] = useState(true);
 
-  // Simulate initial data load effect
   useEffect(() => {
-    const timer = setTimeout(() => setLoading(false), 800);
+    const timer = setTimeout(() => setBooting(false), 1200);
     return () => clearTimeout(timer);
   }, []);
 
   return (
-    <div className="min-h-screen bg-[#050505] text-gray-100 font-sans selection:bg-cyan-500/30 overflow-x-hidden pb-20">
+    <div className="crt-container font-sans selection:bg-cyan-500 selection:text-black">
       <style>{styles}</style>
-      
-      {/* Background Ambience */}
-      <div className="fixed inset-0 pointer-events-none">
-        <div className="absolute top-[-20%] left-[-10%] w-[50%] h-[50%] bg-blue-900/10 rounded-full blur-[120px]"></div>
-        <div className="absolute bottom-[-20%] right-[-10%] w-[50%] h-[50%] bg-cyan-900/10 rounded-full blur-[120px]"></div>
-        <div className="absolute inset-0 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-20 brightness-100 contrast-150"></div>
-      </div>
+      <div className="scanlines"></div>
 
-      {/* --- NAV / HEADER --- */}
-      <header className="sticky top-0 z-50 border-b border-white/5 bg-[#050505]/80 backdrop-blur-md">
-        <div className="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <div className="w-8 h-8 bg-gradient-to-tr from-cyan-600 to-blue-600 rounded-lg flex items-center justify-center shadow-lg shadow-cyan-900/20">
-              <Hexagon className="text-white w-4 h-4 fill-white/20" />
+      {/* --- HEADER --- */}
+      <header className="sticky top-0 z-40 bg-[#0a0a0a] border-b-4 border-[#333] p-4">
+        <div className="max-w-7xl mx-auto flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <div className="w-12 h-12 bg-[#222] flex items-center justify-center border-2 border-cyan-500 shadow-[0_0_10px_rgba(6,182,212,0.3)]">
+              <Terminal className="text-cyan-400" size={24} />
             </div>
-            <span className="font-bold text-lg tracking-tight">EventPulse <span className="text-cyan-500 font-normal">Sponsor</span></span>
+            <div>
+              <h1 className="font-pixel text-sm text-white uppercase">{SPONSOR_DATA.name} <span className="text-cyan-500">TERMINAL</span></h1>
+              <div className="flex gap-4 mt-1 font-console text-xs text-gray-400">
+                <span>ID: {SPONSOR_DATA.id}</span>
+                <span>LOC: {SPONSOR_DATA.location}</span>
+                <span className="text-emerald-500 animate-pulse">● ONLINE</span>
+              </div>
+            </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="hidden md:flex items-center gap-2 px-3 py-1.5 bg-emerald-500/10 border border-emerald-500/20 rounded-full text-xs font-mono text-emerald-400">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              SYSTEM ONLINE
-            </div>
-            <button className="p-2 text-gray-400 hover:text-white transition-colors">
-              <RefreshCw size={18} />
+            <button className="pixel-btn px-4 py-2 font-pixel text-[10px] flex items-center gap-2 hover:border-cyan-500">
+              <RefreshCw size={12} /> SYNC
             </button>
-            <div className="w-8 h-8 rounded-full bg-gray-800 border border-gray-700"></div>
           </div>
         </div>
       </header>
 
-      {/* --- DASHBOARD CONTENT --- */}
-      <main className="max-w-7xl mx-auto px-6 pt-10 relative z-10">
+      {/* --- MAIN CONTENT --- */}
+      <main className="max-w-7xl mx-auto px-6 pt-8 pb-20 relative z-10">
         
-        {/* Title Section */}
-        <div className="flex flex-col md:flex-row md:items-end justify-between gap-6 mb-10">
-          <div>
-            <h1 className="text-4xl font-bold text-white mb-2 flex items-center gap-3">
-              Command Center
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-white/10 border border-white/10 text-gray-400 uppercase tracking-widest">
-                v2.4.0
-              </span>
-            </h1>
-            <p className="text-gray-400 max-w-xl">
-              Real-time telemetry and ROI attribution for <span className="text-white font-medium">Neon Nights 2026</span>.
-            </p>
+        {booting ? (
+          <div className="h-[60vh] flex flex-col items-center justify-center font-pixel text-cyan-500 animate-pulse">
+            <Cpu size={64} className="mb-4" />
+            <div>ESTABLISHING UPLINK...</div>
+            <div className="text-[10px] mt-2">VERIFYING CREDENTIALS</div>
           </div>
-          <div className="flex gap-3">
-            <button className="px-4 py-2 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 text-sm font-medium transition-all flex items-center gap-2">
-              <Filter size={14} /> Filter View
-            </button>
-            <button className="px-4 py-2 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-white text-sm font-bold shadow-[0_0_20px_rgba(6,182,212,0.3)] transition-all flex items-center gap-2">
-              <Download size={14} /> Export Report
-            </button>
-          </div>
-        </div>
+        ) : (
+          <>
+            {/* 1. KPI METRICS (Colorful) */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+              <KPICard 
+                label="VISITORS_TODAY" 
+                value="1,240" 
+                sub="+12% VS AVG" 
+                icon={Users} 
+                colorClass="border-l-cyan-500"
+              />
+              <KPICard 
+                label="AVG_WAIT_TIME" 
+                value="12m 30s" 
+                sub="OPTIMAL FLOW" 
+                icon={Clock} 
+                colorClass="border-l-emerald-500"
+              />
+              <KPICard 
+                label="LEADS_CAPTURED" 
+                value="854" 
+                sub="68% CONVERSION" 
+                icon={Target} 
+                colorClass="border-l-purple-500"
+              />
+              <KPICard 
+                label="STALL_INTENSITY" 
+                value="HIGH" 
+                sub="92% CAPACITY" 
+                icon={Activity} 
+                colorClass="border-l-red-500"
+              />
+            </div>
 
-        {/* 1. KPI GRID (Top Row) */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
-          <KPICard 
-            label="Total Footfall" 
-            value="14,205" 
-            trend="12% vs last hr" 
-            trendUp={true} 
-            icon={Users} 
-            delay="0ms" 
-          />
-          <KPICard 
-            label="Cost Per Interaction" 
-            value="$0.42" 
-            trend="Target: $0.50" 
-            trendUp={true} 
-            icon={DollarSign} 
-            delay="100ms" 
-          />
-          <KPICard 
-            label="Avg Dwell Time" 
-            value="18m 24s" 
-            trend="4m vs avg" 
-            trendUp={true} 
-            icon={Clock} 
-            delay="200ms" 
-          />
-          <KPICard 
-            label="Cross Pollination" 
-            value="34.2%" 
-            trend="2.1% decrease" 
-            trendUp={false} 
-            icon={Share2} 
-            delay="300ms" 
-          />
-        </div>
+            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
 
-        {/* 2. MAIN BENTO GRID */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 h-auto">
+              {/* 2. LEFT COL: STALL HEATMAP ONLY */}
+              <div className="lg:col-span-1">
+                {/* Heatmap Card */}
+                <div className="pixel-card p-4 h-full min-h-[400px]">
+                  <StallHeatmap />
+                </div>
+              </div>
 
-          {/* A. TRAFFIC VELOCITY (Large Chart) */}
-          <div className="lg:col-span-2 glass-card rounded-3xl p-6 min-h-[400px]">
-            <div className="corner-accent c-tr"></div>
-            <div className="scanline-overlay"></div>
-            
-            <CardHeader 
-              title="Traffic Velocity & Peak Hours" 
-              sub="Real-time localized density heatmap" 
-              icon={Activity} 
-              highlight={true}
-            />
+              {/* 3. CENTER/RIGHT COL: ANALYTICS & FEED */}
+              <div className="lg:col-span-2 space-y-6">
+                
+                {/* Traffic Graph */}
+                <div className="pixel-card p-6 h-[280px] flex flex-col">
+                  <div className="flex justify-between items-start mb-4">
+                    <div>
+                      <h3 className="font-pixel text-xs text-cyan-400">TRAFFIC_ANALYSIS</h3>
+                      <p className="font-console text-xs text-gray-500">VISITORS PER HOUR</p>
+                    </div>
+                    <div className="text-right">
+                      <div className="font-pixel text-xs text-emerald-500 animate-pulse">LIVE</div>
+                    </div>
+                  </div>
 
-            <div className="h-[300px] w-full flex items-end justify-between gap-1 pt-8 relative group">
-                {/* Y-Axis Lines */}
-                <div className="absolute inset-0 flex flex-col justify-between pointer-events-none opacity-20">
-                  <div className="w-full h-px border-t border-dashed border-gray-500"></div>
-                  <div className="w-full h-px border-t border-dashed border-gray-500"></div>
-                  <div className="w-full h-px border-t border-dashed border-gray-500"></div>
-                  <div className="w-full h-px border-t border-dashed border-gray-500"></div>
+                  {/* Colorful Histogram */}
+                  <div className="flex-1 flex items-end gap-1 border-b-2 border-l-2 border-[#333] p-2 bg-[#050505] relative">
+                     <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'linear-gradient(0deg, transparent 24%, #333 25%, #333 26%, transparent 27%, transparent 74%, #333 75%, #333 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, #333 25%, #333 26%, transparent 27%, transparent 74%, #333 75%, #333 76%, transparent 77%, transparent)', backgroundSize: '30px 30px'}}></div>
+                     
+                     {[20, 35, 40, 50, 80, 95, 60, 40, 30, 25, 45, 65, 85, 55, 30].map((h, i) => {
+                        // Dynamic color based on height
+                        let barColor = "bg-cyan-600";
+                        if (h > 50) barColor = "bg-purple-600";
+                        if (h > 80) barColor = "bg-red-600";
+
+                        return (
+                          <div key={i} className="flex-1 group relative h-full flex items-end">
+                             <div 
+                                className={`w-full hover:brightness-125 transition-all duration-500 ${barColor}`} 
+                                style={{height: `${h}%`}}
+                             ></div>
+                             {/* Hover Value */}
+                             <div className="absolute -top-8 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#111] border border-white px-1 text-[8px] font-pixel text-white z-10">
+                                {h}
+                             </div>
+                          </div>
+                        );
+                     })}
+                  </div>
                 </div>
 
-                {/* Bars */}
-                {[35, 45, 30, 60, 75, 50, 85, 95, 65, 45, 30, 55, 70, 40, 25, 35, 50, 65, 80, 60, 40, 30, 20, 15].map((h, i) => (
-                  <div key={i} className="relative flex-1 h-full flex items-end group/bar">
-                    <div 
-                      className={`w-full rounded-t-sm transition-all duration-300 group-hover/bar:bg-cyan-400 group-hover/bar:shadow-[0_0_20px_rgba(34,211,238,0.5)] ${i >= 6 && i <= 9 ? 'bg-gradient-to-t from-cyan-900 to-cyan-400 opacity-90' : 'bg-white/10'}`}
-                      style={{ height: `${h}%` }}
-                    ></div>
-                    
-                    {/* Tooltip */}
-                    <div className="absolute -top-12 left-1/2 -translate-x-1/2 bg-gray-900 border border-gray-700 px-2 py-1 rounded opacity-0 group-hover/bar:opacity-100 transition-opacity z-30 pointer-events-none whitespace-nowrap">
-                      <span className="text-[10px] text-gray-300 font-mono">{(i + 8) % 12 || 12}:00 • {h * 12} Visitors</span>
-                    </div>
+                {/* Live Log Terminal (Expanded) */}
+                <div className="pixel-card p-4 bg-[#050505] border-[#333] overflow-hidden flex flex-col h-64">
+                  <h3 className="font-pixel text-[10px] text-gray-400 mb-2 border-b border-[#333] pb-2 flex justify-between">
+                    <span>LIVE_LOGS</span>
+                    <Activity size={10} className="animate-pulse" />
+                  </h3>
+                  <div className="flex-1 overflow-y-auto font-console text-xs space-y-2 p-1">
+                      {LIVE_LOGS.map((log, i) => (
+                        <div key={i} className="flex gap-2 border-b border-[#1a1a1a] pb-1 hover:bg-[#111]">
+                            <span className="text-gray-600">[{log.time}]</span>
+                            <span className={log.color}>
+                              {log.type === 'SCAN' && '>'} {log.msg}
+                            </span>
+                        </div>
+                      ))}
+                      <div className="text-cyan-500 animate-pulse">_</div>
                   </div>
-                ))}
-            </div>
-            
-            <div className="flex justify-between mt-4 text-[10px] text-gray-500 font-mono uppercase tracking-widest">
-              <span>08:00 AM</span>
-              <span>12:00 PM (PEAK)</span>
-              <span>08:00 PM</span>
-            </div>
-          </div>
+                </div>
 
-          {/* B. DEMOGRAPHICS (Stacked) */}
-          <div className="glass-card rounded-3xl p-6">
-            <div className="corner-accent c-tl"></div>
-            <CardHeader 
-              title="Target Demographics" 
-              sub="Anonymous persona identification" 
-              icon={Target} 
-            />
-
-            <div className="flex items-center justify-center py-6 relative">
-              {/* Donut Chart Simulation */}
-              <div className="w-48 h-48 rounded-full border-[16px] border-gray-800 relative flex items-center justify-center">
-                 <div className="absolute inset-0 rounded-full border-[16px] border-cyan-500 border-r-transparent border-b-transparent rotate-45 opacity-80"></div>
-                 <div className="absolute inset-0 rounded-full border-[16px] border-purple-500 border-l-transparent border-b-transparent -rotate-12 opacity-80"></div>
-                 
-                 <div className="text-center z-10">
-                   <div className="text-3xl font-bold text-white">84%</div>
-                   <div className="text-[10px] text-gray-400 uppercase tracking-widest">Match Rate</div>
-                 </div>
               </div>
+
             </div>
 
-            <div className="space-y-4 mt-2">
-              <ProgressBar label="Tech Professionals" value={45} color="bg-cyan-500" />
-              <ProgressBar label="University Students" value={32} color="bg-purple-500" />
-              <ProgressBar label="Venture Capitalists" value={15} color="bg-emerald-500" />
-              <ProgressBar label="Media / Press" value={8} color="bg-yellow-500" />
-            </div>
-          </div>
-
-          {/* C. FLASH SALE IMPACT (Graph) */}
-          <div className="glass-card rounded-3xl p-6 flex flex-col justify-between">
-            <CardHeader 
-              title="Flash Sale Impact" 
-              sub="Conversion spike during 15m window" 
-              icon={Zap} 
-              highlight={true}
-            />
-            
-            <div className="relative h-40 w-full mt-4 flex items-end px-2">
-              {/* Grid Background */}
-              <div className="absolute inset-0 retro-grid opacity-10"></div>
-              
-              {/* The Graph Line */}
-              <svg className="absolute inset-0 h-full w-full overflow-visible" preserveAspectRatio="none">
-                 <path 
-                    d="M0,150 L50,140 L100,145 L150,120 L200,130 L220,50 L240,40 L260,60 L300,120 L350,130 L400,140" 
-                    fill="none" 
-                    stroke="url(#gradient)" 
-                    strokeWidth="3"
-                    className="drop-shadow-[0_0_10px_rgba(234,179,8,0.5)]"
-                 />
-                 <defs>
-                   <linearGradient id="gradient" x1="0%" y1="0%" x2="100%" y2="0%">
-                     <stop offset="0%" stopColor="#4b5563" />
-                     <stop offset="40%" stopColor="#4b5563" />
-                     <stop offset="50%" stopColor="#eab308" />
-                     <stop offset="70%" stopColor="#eab308" />
-                     <stop offset="100%" stopColor="#4b5563" />
-                   </linearGradient>
-                 </defs>
-              </svg>
-
-              {/* The Spike Highlight */}
-              <div className="absolute left-[52%] top-[10%] -translate-x-1/2 flex flex-col items-center">
-                 <div className="bg-yellow-500/20 text-yellow-300 border border-yellow-500/50 px-3 py-1 rounded text-xs font-bold mb-2 backdrop-blur-md animate-bounce">
-                   +400% SPIKE
-                 </div>
-                 <div className="w-px h-20 border-l border-dashed border-yellow-500/50"></div>
-              </div>
-            </div>
-
-            <p className="text-xs text-gray-400 mt-4 leading-relaxed">
-              <strong className="text-yellow-400">Insight:</strong> The 2:00 PM push notification resulted in the highest conversion rate of the day. Recommend repeating at 6:00 PM.
-            </p>
-          </div>
-
-          {/* D. STALL DISTRIBUTION (Leaderboard) */}
-          <div className="lg:col-span-2 glass-card rounded-3xl p-6">
-            <CardHeader 
-              title="Stall Engagement Distribution" 
-              sub="% of unique users scanned per zone" 
-              icon={BarChart3} 
-            />
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-               <div className="space-y-4">
-                  {[
-                    { name: 'Main Stage Area', val: 92, code: 'Z-01', color: 'bg-white' },
-                    { name: 'VR Experience Hall', val: 78, code: 'Z-04', color: 'bg-cyan-400' },
-                    { name: 'Refreshment Lounge', val: 65, code: 'Z-02', color: 'bg-cyan-600' },
-                    { name: 'Merch Booth A', val: 45, code: 'Z-09', color: 'bg-cyan-800' },
-                  ].map((zone, i) => (
-                    <div key={i} className="flex items-center gap-4 group">
-                       <div className="font-mono text-xs text-gray-500 w-8">{zone.code}</div>
-                       <div className="flex-1">
-                          <div className="flex justify-between text-xs mb-1">
-                             <span className="text-gray-300 font-medium">{zone.name}</span>
-                          </div>
-                          <div className="h-2 bg-gray-800 rounded-sm overflow-hidden">
-                             <div className={`h-full ${zone.color} shadow-[0_0_10px_rgba(255,255,255,0.2)]`} style={{width: `${zone.val}%`}}></div>
-                          </div>
-                       </div>
-                       <div className="text-xs font-bold text-white w-8 text-right">{zone.val}%</div>
-                    </div>
-                  ))}
+            {/* Footer */}
+            <footer className="mt-8 border-t-2 border-[#333] pt-4 flex justify-between items-center text-[10px] font-pixel text-gray-500">
+               <div>TERM_ID: {SPONSOR_DATA.id}</div>
+               <div className="flex gap-4">
+                 <span>UPTIME: 04:22:15</span>
+                 <span className="text-emerald-500">ENCRYPTED</span>
                </div>
-
-               {/* Wait Time Visual */}
-               <div className="bg-black/20 rounded-xl p-4 border border-white/5 flex flex-col items-center justify-center text-center relative overflow-hidden">
-                  <div className="absolute inset-0 bg-emerald-500/5 animate-pulse"></div>
-                  <Wifi size={24} className="text-emerald-500 mb-2" />
-                  <div className="text-4xl font-mono font-bold text-white mb-1">04:12</div>
-                  <div className="text-xs text-gray-400 uppercase tracking-widest mb-4">Avg Wait Time</div>
-                  <div className="w-full bg-gray-800 h-1 rounded-full overflow-hidden">
-                    <div className="h-full bg-emerald-500 w-[80%]"></div>
-                  </div>
-                  <p className="text-[10px] text-emerald-400 mt-2">
-                    Running 12% faster than estimated capacity.
-                  </p>
-               </div>
-            </div>
-          </div>
-
-        </div>
-
-        {/* Footer */}
-        <footer className="mt-12 border-t border-white/5 pt-8 pb-12 flex justify-between items-center text-xs text-gray-500">
-           <div>
-             SYSTEM ID: <span className="font-mono text-gray-400">SPON-882-X</span>
-           </div>
-           <div className="flex gap-4">
-             <span>Data updated: Real-time</span>
-             <span className="text-emerald-500">● Live Connection</span>
-           </div>
-        </footer>
+            </footer>
+          </>
+        )}
 
       </main>
     </div>
