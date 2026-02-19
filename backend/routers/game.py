@@ -25,6 +25,7 @@ from models import (
     StallInfo,
     serialize_doc,
 )
+from services.fraud_engine import fraud_engine
 
 router = APIRouter(prefix="/api/game", tags=["Game"])
 
@@ -191,6 +192,11 @@ async def scan_stall(body: ScanRequest, x_user_id: str = Header(default="")):
     }
     result = await db.scanevents.insert_one(scan_doc)
     scan_event_id = result.inserted_id
+    
+    # 3.5 Check for fraud
+    # We add the _id to the doc so the engine can reference it
+    scan_doc["_id"] = scan_event_id
+    await fraud_engine.verify_scan(scan_doc)
 
     # 4. Update user wallet & pokedex
     if student_oid:
