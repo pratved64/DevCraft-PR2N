@@ -97,6 +97,7 @@ class StallInfo(BaseModel):
     current_pokemon_spawn: dict
     crowd_level: str  # "Low" | "Medium" | "High"
     scan_count_10m: int
+    total_scan_count: int = 0  # All-time scans for this stall
 
 
 class NotificationItem(BaseModel):
@@ -137,11 +138,26 @@ class RewardItem(BaseModel):
     affordable: bool  # Can the current user afford it?
 
 
+class TopStallEntry(BaseModel):
+    stall_id: str
+    company_name: str
+    category: str
+    scan_count: int
+
+
+class HourlyTrafficEntry(BaseModel):
+    hour: int          # 0-23
+    label: str         # "8 AM", "9 AM", …
+    scans: int
+    is_peak: bool
+
+
 class StatsResponse(BaseModel):
     total_attendees: int
     total_sponsors: int
     total_scans: int
     top_stall: Optional[str] = None
+    top_stalls: list["TopStallEntry"] = Field(default_factory=list)
     legendary_count: int
     highlight: str
 

@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from database import lifespan
-from routers import general, game, sponsor, store
+from routers import general, game, sponsor, store, monitor
 
 # ──────────────────────────── App ──────────────────────────────────────
 
@@ -37,6 +37,7 @@ app.include_router(general.router)
 app.include_router(game.router)
 app.include_router(sponsor.router)
 app.include_router(store.router)
+app.include_router(monitor.router)
 
 
 # ──────────────────────────── Root ─────────────────────────────────────

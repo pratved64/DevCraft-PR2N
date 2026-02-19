@@ -6,11 +6,18 @@ All data sourced from MongoDB via async Motor.
 
 from __future__ import annotations
 
+import random
+
 from bson import ObjectId
 from fastapi import APIRouter, HTTPException
 
 from database import get_db
-from models import AnalyticsResponse, ScanCandidateRequest, ScanCandidateResponse
+from models import (
+    AnalyticsResponse,
+    HourlyTrafficEntry,
+    ScanCandidateRequest,
+    ScanCandidateResponse,
+)
 from utils.analytics import (
     calculate_avg_wait_time,
     calculate_cpi,
@@ -152,3 +159,58 @@ async def stall_analytics(stall_id: str):
         cross_pollination=cross_poll,
         flash_sale_lift=flash_lift,
     )
+
+
+# ──────────────── GET /traffic/{stall_id} ─────────────────────────────
+
+
+@router.get("/traffic/{stall_id}", response_model=list[HourlyTrafficEntry])
+async def stall_hourly_traffic(stall_id: str):
+    """
+    Return per-hour scan counts (8 AM – 8 PM) for a stall.
+    Uses real MongoDB aggregation; falls back to realistic mock data
+    if no scans exist yet (safe for demo).
+    """
+    db = get_db()
+
+    try:
+        sponsor_oid = ObjectId(stall_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid stall_id format")
+
+    # Aggregate scans by hour-of-day
+    pipeline = [
+        {"$match": {"sponsor_id": sponsor_oid}},
+        {"$group": {"_id": {"$hour": "$timestamp"}, "count": {"$sum": 1}}},
+        {"$sort": {"_id": 1}},
+    ]
+    raw = await db.scanevents.aggregate(pipeline).to_list(length=24)
+    hour_map: dict[int, int] = {r["_id"]: r["count"] for r in raw}
+
+    # If no real data, generate a realistic mock bell-curve for the demo
+    if not hour_map:
+        base = [8, 15, 25, 40, 60, 80, 95, 110, 100, 85, 65, 40, 20]
+        for idx, h in enumerate(range(8, 21)):
+            noise = random.randint(-8, 8)
+            hour_map[h] = max(0, base[idx] + noise)
+
+    # Build the 8 AM–8 PM response (12 hours)
+    labels = {
+        8: "8 AM", 9: "9 AM", 10: "10 AM", 11: "11 AM",
+        12: "12 PM", 13: "1 PM", 14: "2 PM", 15: "3 PM",
+        16: "4 PM", 17: "5 PM", 18: "6 PM", 19: "7 PM", 20: "8 PM",
+    }
+    if hour_map:
+        peak_hour_val = max(hour_map, key=lambda h: hour_map[h])
+    else:
+        peak_hour_val = 14
+
+    entries = []
+    for h in range(8, 21):
+        entries.append(HourlyTrafficEntry(
+            hour=h,
+            label=labels[h],
+            scans=hour_map.get(h, 0),
+            is_peak=(h == peak_hour_val),
+        ))
+    return entries

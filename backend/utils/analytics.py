@@ -63,27 +63,47 @@ async def calculate_cross_pollination(
     Cross-Pollination: % of users who visited *this* stall AND at least one
     other stall.
 
-    Pipeline:
-    1. Collect distinct student_ids who scanned this sponsor.
-    2. For each of those students, check if they have scans at other sponsors.
-    3. Return (students_with_other_stalls / total_students * 100).
+    Uses a single aggregation pipeline (no N+1) for performance:
+    1. Group all scan events by student_id, collecting distinct sponsor_ids.
+    2. Filter to students who visited this stall.
+    3. Count how many of those also visited at least one other stall.
     """
     oid = ObjectId(sponsor_id)
     scans_col = db.get_collection("scanevents")
 
-    # 1. Unique students at this stall
-    visitor_ids = await scans_col.distinct("student_id", {"sponsor_id": oid})
-    if not visitor_ids:
+    pipeline = [
+        # Group by student → unique set of sponsors they visited
+        {
+            "$group": {
+                "_id": "$student_id",
+                "sponsors_visited": {"$addToSet": "$sponsor_id"},
+            }
+        },
+        # Only keep students who visited this stall
+        {"$match": {"sponsors_visited": oid}},
+        # Project whether they visited any OTHER stall
+        {
+            "$project": {
+                "visited_others": {
+                    "$gt": [{"$size": "$sponsors_visited"}, 1]
+                }
+            }
+        },
+        # Summarise
+        {
+            "$group": {
+                "_id": None,
+                "total": {"$sum": 1},
+                "cross": {"$sum": {"$cond": ["$visited_others", 1, 0]}},
+            }
+        },
+    ]
+
+    result = await scans_col.aggregate(pipeline).to_list(length=1)
+    if not result or result[0]["total"] == 0:
         return None
 
-    # 2. How many of those students also visited elsewhere?
-    cross_count = 0
-    for student_id in visitor_ids:
-        other = await scans_col.find_one(
-            {"student_id": student_id, "sponsor_id": {"$ne": oid}}
-        )
-        if other:
-            cross_count += 1
-
-    pct = Decimal(str(cross_count)) / Decimal(str(len(visitor_ids))) * Decimal("100")
+    total = result[0]["total"]
+    cross = result[0]["cross"]
+    pct = Decimal(str(cross)) / Decimal(str(total)) * Decimal("100")
     return float(pct.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))

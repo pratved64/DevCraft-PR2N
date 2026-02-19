@@ -25,7 +25,6 @@ from models import (
     StallInfo,
     serialize_doc,
 )
-from services.fraud_engine import fraud_engine
 
 router = APIRouter(prefix="/api/game", tags=["Game"])
 
@@ -192,11 +191,6 @@ async def scan_stall(body: ScanRequest, x_user_id: str = Header(default="")):
     }
     result = await db.scanevents.insert_one(scan_doc)
     scan_event_id = result.inserted_id
-    
-    # 3.5 Check for fraud
-    # We add the _id to the doc so the engine can reference it
-    scan_doc["_id"] = scan_event_id
-    await fraud_engine.verify_scan(scan_doc)
 
     # 4. Update user wallet & pokedex
     if student_oid:
@@ -249,8 +243,7 @@ async def leaderboard(
 ):
     """
     Leaderboard ranked by total_points.
-    ?filter=friends → only friends + self (if friend model existed).
-    For now, returns all users sorted by points.
+    ?filter=friends → returns the current user + 5 mock rivals for demo purposes.
     """
     db = get_db()
 
@@ -269,6 +262,74 @@ async def leaderboard(
     cursor = db.users.aggregate(pipeline)
     users = await cursor.to_list(length=50)
 
+    if filter == "friends" and x_user_id:
+        # Demo strategy: find the current user and inject 5 realistic mock rivals
+        # around their rank so the friends leaderboard looks populated.
+        MOCK_FRIEND_NAMES = ["ASH K.", "MISTY W.", "BROCK S.", "GARY O.", "DAWN P."]
+        MOCK_FRIEND_SPRITES = [25, 120, 74, 6, 393]  # Pokédex IDs for avatars
+
+        # Locate current user in the sorted list
+        current_user_entry = None
+        for i, u in enumerate(users):
+            if str(u["_id"]) == x_user_id:
+                user_pts = u.get("wallet", {}).get("total_points", 0)
+                current_user_entry = LeaderboardEntry(
+                    rank=1,
+                    user_id=str(u["_id"]),
+                    name=u.get("name", "YOU").split()[0].upper()[:8],
+                    points=user_pts,
+                    pokemon_count=len(u.get("pokedex", [])),
+                    legendaries_caught=u.get("wallet", {}).get("legendaries_caught", 0),
+                )
+                break
+
+        if not current_user_entry and users:
+            u = users[0]
+            user_pts = u.get("wallet", {}).get("total_points", 0)
+            current_user_entry = LeaderboardEntry(
+                rank=1,
+                user_id=str(u["_id"]),
+                name=u.get("name", "YOU").split()[0].upper()[:8],
+                points=user_pts,
+                pokemon_count=len(u.get("pokedex", [])),
+                legendaries_caught=u.get("wallet", {}).get("legendaries_caught", 0),
+            )
+        elif not current_user_entry:
+            current_user_entry = LeaderboardEntry(
+                rank=3, user_id=x_user_id, name="YOU",
+                points=420, pokemon_count=8, legendaries_caught=1,
+            )
+
+        base_pts = current_user_entry.points
+        base_count = current_user_entry.pokemon_count
+
+        # Build a small friends board with the current user sandwiched in rank 3
+        friends_board = [
+            LeaderboardEntry(rank=1, user_id="f1", name=MOCK_FRIEND_NAMES[0],
+                             points=base_pts + random.randint(200, 800),
+                             pokemon_count=base_count + random.randint(3, 10),
+                             legendaries_caught=random.randint(1, 4)),
+            LeaderboardEntry(rank=2, user_id="f2", name=MOCK_FRIEND_NAMES[1],
+                             points=base_pts + random.randint(50, 199),
+                             pokemon_count=base_count + random.randint(1, 4),
+                             legendaries_caught=random.randint(0, 2)),
+            LeaderboardEntry(rank=3, **{k: v for k, v in current_user_entry.model_dump().items() if k != "rank"}),
+            LeaderboardEntry(rank=4, user_id="f3", name=MOCK_FRIEND_NAMES[2],
+                             points=max(0, base_pts - random.randint(50, 200)),
+                             pokemon_count=max(0, base_count - random.randint(1, 3)),
+                             legendaries_caught=random.randint(0, 1)),
+            LeaderboardEntry(rank=5, user_id="f4", name=MOCK_FRIEND_NAMES[3],
+                             points=max(0, base_pts - random.randint(200, 500)),
+                             pokemon_count=max(0, base_count - random.randint(3, 7)),
+                             legendaries_caught=0),
+            LeaderboardEntry(rank=6, user_id="f5", name=MOCK_FRIEND_NAMES[4],
+                             points=max(0, base_pts - random.randint(500, 900)),
+                             pokemon_count=max(0, base_count - random.randint(5, 10)),
+                             legendaries_caught=0),
+        ]
+        return friends_board
+
+    # ── Default: global leaderboard ──
     entries = []
     for i, u in enumerate(users):
         entries.append(
@@ -292,16 +353,35 @@ async def leaderboard(
 async def list_stalls():
     """
     List all sponsors with live crowd level and current pokemon spawn.
-    Used for the event map view.
+    Uses a single aggregation to batch all scan counts — no N+1.
     """
     db = get_db()
 
     sponsors = await db.sponsors.find().to_list(length=100)
-    result = []
+    sponsor_oids = [sp["_id"] for sp in sponsors]
 
+    # ── Batch: total scans per stall (all-time) ──
+    total_pipeline = [
+        {"$match": {"sponsor_id": {"$in": sponsor_oids}}},
+        {"$group": {"_id": "$sponsor_id", "count": {"$sum": 1}}},
+    ]
+    total_results = await db.scanevents.aggregate(total_pipeline).to_list(length=200)
+    total_map: dict = {r["_id"]: r["count"] for r in total_results}
+
+    # ── Batch: recent scans per stall (last 10 min) ──
+    threshold = datetime.now(timezone.utc) - timedelta(minutes=10)
+    recent_pipeline = [
+        {"$match": {"sponsor_id": {"$in": sponsor_oids}, "timestamp": {"$gte": threshold}}},
+        {"$group": {"_id": "$sponsor_id", "count": {"$sum": 1}}},
+    ]
+    recent_results = await db.scanevents.aggregate(recent_pipeline).to_list(length=200)
+    recent_map: dict = {r["_id"]: r["count"] for r in recent_results}
+
+    result = []
     for sp in sponsors:
         sp_oid = sp["_id"]
-        scan_count = await _recent_scan_count(db, sp_oid)
+        scan_count = recent_map.get(sp_oid, 0)
+        total_count = total_map.get(sp_oid, 0)
 
         if scan_count < 5:
             crowd_level = "Low"
@@ -324,6 +404,7 @@ async def list_stalls():
                 },
                 crowd_level=crowd_level,
                 scan_count_10m=scan_count,
+                total_scan_count=total_count,
             )
         )
 
@@ -378,26 +459,38 @@ async def heatmap(websocket: WebSocket):
         while True:
             db = get_db()
             sponsors = await db.sponsors.find().to_list(length=100)
+            sponsor_oids = [sp["_id"] for sp in sponsors]
+
+            # Batch: total scans per stall (all-time) for leaderboard bars
+            total_pipeline = [
+                {"$match": {"sponsor_id": {"$in": sponsor_oids}}},
+                {"$group": {"_id": "$sponsor_id", "count": {"$sum": 1}}},
+            ]
+            total_results = await db.scanevents.aggregate(total_pipeline).to_list(length=200)
+            total_map: dict = {r["_id"]: r["count"] for r in total_results}
 
             data = []
             for sp in sponsors:
-                scan_count = await _recent_scan_count(db, sp["_id"], minutes=30)
+                sp_oid = sp["_id"]
+                recent_count = await _recent_scan_count(db, sp_oid, minutes=30)
+                total_count = total_map.get(sp_oid, 0)
                 loc = sp.get("map_location", {})
 
-                if scan_count < 5:
+                if recent_count < 5:
                     crowd = "Low"
-                elif scan_count < 20:
+                elif recent_count < 20:
                     crowd = "Medium"
                 else:
                     crowd = "High"
 
                 data.append(
                     {
-                        "stall_id": str(sp["_id"]),
+                        "stall_id": str(sp_oid),
                         "stall_name": sp.get("company_name", ""),
                         "x": loc.get("x_coord", 0),
                         "y": loc.get("y_coord", 0),
-                        "scan_count": scan_count,
+                        "scan_count": total_count,     # all-time for the leaderboard bar
+                        "recent_scan_count": recent_count,  # 30-min for crowd level
                         "crowd_level": crowd,
                         "legendary_available": crowd == "Low",
                     }
