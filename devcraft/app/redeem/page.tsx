@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { ShoppingBag, X, Battery, Wifi, Search, ArrowRightLeft, QrCode, MapPin, Map } from 'lucide-react';
-import { fetchRewards, fetchMyHistory, redeemReward, type RewardItem, type HistoryResponse } from '../../lib/api';
+import { fetchRewards, fetchMyHistory, redeemReward, fetchStalls, type RewardItem, type HistoryResponse, type StallInfo } from '../../lib/api';
 
 // --- PIXEL ART STYLES ---
 const styles = `
@@ -116,6 +116,7 @@ export default function PokemonDash() {
    const [user, setUser] = useState(MOCK_USER);
    const [scans, setScans] = useState(MOCK_SCAN_EVENTS);
    const [rewards, setRewards] = useState(MOCK_REWARDS);
+   const [mapStalls, setMapStalls] = useState<StallInfo[]>([]);
 
    const [selectedMon, setSelectedMon] = useState<any>(null);
    const [selectedReward, setSelectedReward] = useState<any>(null);
@@ -139,6 +140,11 @@ export default function PokemonDash() {
                stock_remaining: r.stock_remaining,
             })));
          })
+         .catch(console.error);
+
+      // Fetch live stall map data
+      fetchStalls()
+         .then((stalls) => { if (stalls.length > 0) setMapStalls(stalls); })
          .catch(console.error);
 
       // Fetch user history from API
@@ -393,16 +399,39 @@ export default function PokemonDash() {
                                  </div>
                               )}
 
-                              {/* 4. VIEW: MAP (Sponsors) */}
+                              {/* 4. VIEW: MAP (Sponsors — live data) */}
                               {view === 'MAP' && (
-                                 <div className="h-full relative bg-[#e0f8cf] border border-[#0f380f]">
+                                 <div className="h-full relative bg-[#e0f8cf] border border-[#0f380f] overflow-hidden">
                                     <div className="absolute inset-0 opacity-20" style={{ backgroundImage: 'radial-gradient(#0f380f 1px, transparent 1px)', backgroundSize: '10px 10px' }}></div>
-                                    {MOCK_SPONSORS.map(sp => (
-                                       <div key={sp._id} className="absolute flex flex-col items-center" style={{ left: `${sp.loc.x}%`, top: `${sp.loc.y}%`, transform: 'translate(-50%,-50%)' }}>
-                                          <MapPin size={16} className="text-[#0f380f] animate-bounce" />
-                                          <span className="font-pixel text-[6px] bg-[#0f380f] text-[#9bbc0f] px-1">{sp.name}</span>
-                                       </div>
-                                    ))}
+                                    {/* Status legend */}
+                                    <div className="absolute top-1 left-1 z-20 flex gap-1">
+                                       <span className="font-pixel text-[5px] bg-[#f57f17] text-[#0f380f] px-1">✨ LEGEND</span>
+                                       <span className="font-pixel text-[5px] bg-[#d32f2f] text-white px-1">🔥 HIGH</span>
+                                    </div>
+                                    {(mapStalls.length > 0 ? mapStalls : MOCK_SPONSORS.map(s => ({
+                                       stall_id: s._id, company_name: s.name,
+                                       map_location: { x_coord: s.loc.x * 9, y_coord: s.loc.y * 9 },
+                                       current_pokemon_spawn: { name: 'Pikachu', rarity: 'Normal' },
+                                       crowd_level: 'Normal', scan_count_10m: 0, total_scan_count: 0, category: '',
+                                    }))).map((sp: any) => {
+                                       const x = sp.map_location ? Math.min(90, Math.max(5, (sp.map_location.x_coord / 900) * 100)) : sp.loc?.x ?? 50;
+                                       const y = sp.map_location ? Math.min(90, Math.max(5, (sp.map_location.y_coord / 900) * 100)) : sp.loc?.y ?? 50;
+                                       const isLegendary = sp.current_pokemon_spawn?.rarity === 'Legendary';
+                                       const isHigh = sp.crowd_level === 'High';
+                                       return (
+                                          <div key={sp.stall_id || sp._id} className="absolute flex flex-col items-center" style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%,-50%)' }}>
+                                             <MapPin
+                                                size={isLegendary ? 20 : 14}
+                                                className={`${isLegendary ? 'text-[#f57f17] animate-bounce' : isHigh ? 'text-[#d32f2f]' : 'text-[#0f380f]'}`}
+                                                fill={isLegendary ? '#f57f17' : isHigh ? '#d32f2f' : '#0f380f'}
+                                             />
+                                             <span className="font-pixel text-[5px] bg-[#0f380f] text-[#9bbc0f] px-1 max-w-[50px] truncate text-center">
+                                                {(sp.company_name || sp.name || '').slice(0, 8)}
+                                             </span>
+                                             {isLegendary && <span className="font-pixel text-[5px] text-[#f57f17]">✨</span>}
+                                          </div>
+                                       );
+                                    })}
                                  </div>
                               )}
 

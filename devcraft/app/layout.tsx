@@ -15,6 +15,9 @@ const robotoMono = Roboto_Mono({
 export const metadata: Metadata = {
   title: "EventFlow – Pokémon Event Platform",
   description: "Scan stalls, catch Pokémon, earn rewards and view live crowd analytics.",
+  icons: {
+    icon: "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>",
+  },
 };
 
 export default function RootLayout({
@@ -26,6 +29,7 @@ export default function RootLayout({
     <html lang="en">
       <body
         className={`${inter.variable} ${robotoMono.variable} antialiased`}
+        suppressHydrationWarning
       >
         {children}
       </body>

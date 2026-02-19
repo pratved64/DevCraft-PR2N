@@ -2,71 +2,58 @@
 
 import React, { useState, useEffect } from 'react';
 import { Activity, AlertTriangle, Server, Wifi } from 'lucide-react';
-import { fetchStalls, fetchStats, type StallInfo, type Stats } from '../../lib/api';
-
-// --- Fallback Mock Data ---
-const MOCK_STALL_LEADERBOARD = [
-  { name: 'Google Cloud Stall', scans: 1240, status: 'Active' },
-  { name: 'Red Bull Zone', scans: 1100, status: 'Active' },
-  { name: 'Coding Club', scans: 850, status: 'Active' },
-  { name: 'Art Gallery', scans: 320, status: 'Low Traffic' },
-];
-
-const MOCK_FRAUD_ALERTS = [
-  { id: 1, user: 'User_992', reason: 'Velocity Check (>3 scans/10s)', time: '14:32' },
-  { id: 2, user: 'User_104', reason: 'Duplicate Resume Drop', time: '13:15' },
-];
+import { fetchStats, fetchAlerts, openHeatmapSocket, type Stats, type Alert } from '../../lib/api';
 
 export default function OrganizerPage() {
-  const [stallLeaderboard, setStallLeaderboard] = useState(MOCK_STALL_LEADERBOARD);
-  const [fraudAlerts] = useState(MOCK_FRAUD_ALERTS);
+  const [stallLeaderboard, setStallLeaderboard] = useState<{ name: string, scans: number, status: string }[]>([]);
+  const [fraudAlerts, setFraudAlerts] = useState<Alert[]>([]);
   const [stats, setStats] = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [wsConnected, setWsConnected] = useState(false);
 
   useEffect(() => {
-    // 1. Initial REST Fetch
-    fetchStalls()
-      .then((stalls) => {
-        const mapped = stalls
-          .map((s) => ({
-            id: s.stall_id,
-            name: s.company_name,
-            scans: s.scan_count_10m,
-            status: s.crowd_level === 'Low' ? 'Low Traffic' : 'Active',
-          }))
-          .sort((a, b) => b.scans - a.scans);
-        if (mapped.length > 0) setStallLeaderboard(mapped);
+    // 1. Fetch stats — top_stalls gives us total historical scan counts
+    fetchStats()
+      .then((s) => {
+        setStats(s);
+        if (s.top_stalls && s.top_stalls.length > 0) {
+          const mapped = s.top_stalls.map((t) => ({
+            name: t.company_name,
+            scans: t.scan_count,
+            status: t.scan_count === 0 ? 'No Scans Yet' : 'Active',
+          }));
+          setStallLeaderboard(mapped);
+        }
       })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+
+    // 2. Fetch fraud / security alerts
+    fetchAlerts()
+      .then(setFraudAlerts)
       .catch(console.error);
 
-    fetchStats().then(setStats).catch(console.error);
-
-    // 2. WebSocket for Live Heatmap
-    const wsUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/^http/, 'ws') + '/api/game/heatmap';
-    const ws = new WebSocket(wsUrl);
-
-    ws.onmessage = (event) => {
-      try {
-        const data = JSON.parse(event.data);
-        if (data.heatmap) {
-          const updated = data.heatmap.map((h: any) => ({
-            id: h.stall_id,
+    // 3. WebSocket for Live Heatmap — updates leaderboard in real time
+    const ws = openHeatmapSocket((data) => {
+      setWsConnected(true);
+      if (data.heatmap && data.heatmap.length > 0) {
+        const updated = data.heatmap
+          .map((h: any) => ({
             name: h.stall_name,
-            scans: h.scan_count,
+            scans: h.scan_count,   // all-time total from WS (patched backend)
             status: h.crowd_level === 'Low' ? 'Low Traffic' : 'Active',
-          })).sort((a: any, b: any) => b.scans - a.scans);
-          setStallLeaderboard(updated);
-        }
-      } catch (e) {
-        console.error("WS Parse Error", e);
+          }))
+          .sort((a: any, b: any) => b.scans - a.scans);
+        setStallLeaderboard(updated);
       }
-    };
+    });
 
     return () => {
       if (ws.readyState === 1) ws.close();
     };
   }, []);
 
-  const maxScans = stallLeaderboard.length > 0 ? Math.max(...stallLeaderboard.map(s => s.scans), 1) : 1500;
+  const maxScans = stallLeaderboard.length > 0 ? Math.max(...stallLeaderboard.map(s => s.scans), 1) : 1;
 
   return (
     <div className="p-8 bg-gray-950 min-h-screen font-sans text-gray-100">
@@ -110,6 +97,11 @@ export default function OrganizerPage() {
         </div>
       </header>
 
+      <div className="flex items-center gap-2 mb-6">
+        <div className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-green-500 animate-pulse' : 'bg-yellow-500'}`}></div>
+        <span className="text-xs text-gray-500">{wsConnected ? 'Live WebSocket connected' : 'Connecting to live feed…'}</span>
+      </div>
+
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         {/* Main Column: Leaderboard */}
         <div className="col-span-2 space-y-6">
@@ -118,28 +110,51 @@ export default function OrganizerPage() {
               <span className="text-blue-500">#</span> Live Stall Traffic
             </h3>
             <div className="space-y-4">
-              {stallLeaderboard.map((stall, index) => (
-                <div key={index} className="group flex items-center gap-4 p-4 bg-gray-800/50 hover:bg-gray-800 rounded-lg transition border border-transparent hover:border-gray-700">
-                  <span className="text-2xl font-bold text-gray-600 w-8 group-hover:text-gray-400">#{index + 1}</span>
-                  <div className="flex-1">
-                    <div className="flex justify-between mb-2">
-                      <h4 className="font-bold text-gray-200">{stall.name}</h4>
-                      <span className="text-sm text-gray-400 font-mono">{stall.scans} scans</span>
+              {loading ? (
+                // Skeleton rows while fetching
+                Array.from({ length: 4 }).map((_, i) => (
+                  <div key={i} className="flex items-center gap-4 p-4 bg-gray-800/30 rounded-lg animate-pulse">
+                    <div className="w-8 h-6 bg-gray-700 rounded"></div>
+                    <div className="flex-1 space-y-2">
+                      <div className="h-4 bg-gray-700 rounded w-1/3"></div>
+                      <div className="h-1.5 bg-gray-700 rounded w-full"></div>
                     </div>
-                    <div className="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                      <div
-                        className={`h-full rounded-full ${index === 0 ? 'bg-gradient-to-r from-blue-500 to-purple-500' : 'bg-blue-600'}`}
-                        style={{ width: `${(stall.scans / maxScans) * 100}%` }}
-                      ></div>
-                    </div>
+                    <div className="w-16 h-6 bg-gray-700 rounded"></div>
                   </div>
-                  <div className="text-right min-w-[80px]">
-                    <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded border ${stall.status === 'Active' ? 'bg-green-500/10 text-green-400 border-green-500/20' : 'bg-red-500/10 text-red-400 border-red-500/20'}`}>
-                      {stall.status}
-                    </span>
-                  </div>
+                ))
+              ) : stallLeaderboard.length === 0 ? (
+                <div className="text-center py-12 text-gray-500">
+                  <Activity className="w-10 h-10 mx-auto mb-3 opacity-30" />
+                  <p className="text-sm">No stall data yet — scans will appear here in real time.</p>
                 </div>
-              ))}
+              ) : (
+                stallLeaderboard.map((stall, index) => (
+                  <div key={index} className="group flex items-center gap-4 p-4 bg-gray-800/50 hover:bg-gray-800 rounded-lg transition border border-transparent hover:border-gray-700">
+                    <span className="text-2xl font-bold text-gray-600 w-8 group-hover:text-gray-400">#{index + 1}</span>
+                    <div className="flex-1">
+                      <div className="flex justify-between mb-2">
+                        <h4 className="font-bold text-gray-200">{stall.name}</h4>
+                        <span className="text-sm text-gray-400 font-mono">{stall.scans.toLocaleString()} scans</span>
+                      </div>
+                      <div className="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
+                        <div
+                          className={`h-full rounded-full transition-all duration-500 ${index === 0 ? 'bg-gradient-to-r from-blue-500 to-purple-500' : 'bg-blue-600'}`}
+                          style={{ width: `${Math.max((stall.scans / maxScans) * 100, stall.scans === 0 ? 0 : 3)}%` }}
+                        ></div>
+                      </div>
+                    </div>
+                    <div className="text-right min-w-[80px]">
+                      <span className={`text-[10px] uppercase font-bold px-2 py-1 rounded border ${
+                        stall.status === 'Active' ? 'bg-green-500/10 text-green-400 border-green-500/20' :
+                        stall.status === 'No Scans Yet' ? 'bg-gray-500/10 text-gray-400 border-gray-500/20' :
+                        'bg-red-500/10 text-red-400 border-red-500/20'
+                      }`}>
+                        {stall.status}
+                      </span>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </div>
         </div>

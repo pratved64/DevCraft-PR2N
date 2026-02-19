@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
-import { fetchStats, type Stats } from '../lib/api';
+import { fetchStats, type Stats, type TopStallEntry } from '../lib/api';
 import Background from '../components/background'; // Ensure this path is correct
 import {
   ArrowRight, QrCode, Zap, Play, Hexagon, Fingerprint, Layers,
@@ -133,7 +133,7 @@ const Hero = ({ stats }: { stats: Stats | null }) => (
 
     <div className="inline-flex items-center gap-2 px-4 py-2 rounded-full border border-cyan-500/30 bg-cyan-950/20 text-cyan-300 text-xs font-bold mb-8 uppercase tracking-widest backdrop-blur-md animate-fade-in">
       <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse"></span>
-      System Online v2.4
+      {stats ? stats.highlight : 'System Online v2.4'}
     </div>
 
     <h1 className="text-7xl md:text-9xl font-bold tracking-tighter text-transparent bg-clip-text bg-gradient-to-b from-white via-white to-white/40 mb-8 animate-fade-in delay-100 drop-shadow-2xl">
@@ -145,22 +145,51 @@ const Hero = ({ stats }: { stats: Stats | null }) => (
       like liquid in real-time.
     </p>
 
-    <div className="flex flex-col sm:flex-row justify-center gap-5 mb-24 animate-fade-in delay-300 relative z-20">
-      <button className="group relative px-8 py-4 bg-cyan-500 text-black rounded-full font-bold text-lg hover:scale-105 transition-all duration-300 shadow-[0_0_40px_rgba(6,182,212,0.4)] hover:shadow-[0_0_60px_rgba(6,182,212,0.6)]">
-        <span className="relative z-10 flex items-center gap-2">
-          Start Measuring <ArrowRight size={18} />
-        </span>
-      </button>
-      <button className="px-8 py-4 rounded-full border border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold text-lg backdrop-blur-md transition-all flex items-center gap-2 group">
+    <div className="flex flex-col sm:flex-row justify-center gap-5 mb-16 animate-fade-in delay-300 relative z-20">
+      <Link href="/studentpage" className="group relative px-8 py-4 bg-cyan-500 text-black rounded-full font-bold text-lg hover:scale-105 transition-all duration-300 shadow-[0_0_40px_rgba(6,182,212,0.4)] hover:shadow-[0_0_60px_rgba(6,182,212,0.6)] flex items-center gap-2">
+        Start Measuring <ArrowRight size={18} />
+      </Link>
+      <Link href="/organizer" className="px-8 py-4 rounded-full border border-white/10 bg-white/5 hover:bg-white/10 text-white font-bold text-lg backdrop-blur-md transition-all flex items-center gap-2 group">
         <Play size={18} className="fill-white/50 group-hover:fill-white transition-colors" />
-        Watch Demo
-      </button>
+        Organizer View
+      </Link>
     </div>
 
-    <div className="absolute bottom-12 left-12 hidden lg:flex gap-4">
-      <MetricCard label="Total Attendees" value={stats ? stats.total_attendees.toLocaleString() : '...'} trend={stats ? `${stats.total_sponsors} sponsors` : ''} delay="delay-300" />
-      <MetricCard label="Scans Logged" value={stats ? stats.total_scans.toLocaleString() : '...'} trend={stats ? `${stats.legendary_count} legendaries` : ''} delay="delay-300" />
+    {/* Live Stats Bar — Integrated into flow */}
+    <div className="w-full max-w-5xl mx-auto flex flex-col lg:flex-row gap-6 items-center lg:items-start justify-center animate-fade-in delay-300 z-20">
+
+      {/* Metrics Row */}
+      <div className="flex flex-wrap justify-center gap-4">
+        <MetricCard label="Total Attendees" value={stats ? stats.total_attendees.toLocaleString() : '...'} trend={stats ? `${stats.total_sponsors} sponsors active` : ''} delay="delay-300" />
+        <MetricCard label="Scans Logged" value={stats ? stats.total_scans.toLocaleString() : '...'} trend={stats ? `${stats.legendary_count} legendaries caught` : ''} delay="delay-300" />
+        <MetricCard label="Top Stall" value={stats?.top_stall ?? '...'} delay="delay-300" />
+      </div>
+
+      {/* Top Stalls Mini-Leaderboard */}
+      {stats && stats.top_stalls && stats.top_stalls.length > 0 && (
+        <div className="glass-panel rounded-xl px-5 py-3 min-w-[300px] max-w-md w-full">
+          <div className="text-[10px] text-gray-400 uppercase tracking-widest mb-2 flex items-center gap-1">
+            <TrendingUp size={10} className="text-cyan-400" /> Top Stalls by Traffic
+          </div>
+          {stats.top_stalls.slice(0, 4).map((stall: TopStallEntry, i: number) => {
+            const maxScans = stats.top_stalls[0].scan_count || 1;
+            const pct = Math.round((stall.scan_count / maxScans) * 100);
+            return (
+              <div key={stall.stall_id} className="flex items-center gap-3 mb-1.5">
+                <span className="text-xs text-gray-500 w-4 font-mono">#{i + 1}</span>
+                <span className="text-xs text-gray-200 flex-1 truncate">{stall.company_name}</span>
+                <div className="w-20 h-1.5 bg-white/10 rounded-full overflow-hidden">
+                  <div className="h-full bg-cyan-500 rounded-full" style={{ width: `${pct}%` }} />
+                </div>
+                <span className="text-xs text-gray-400 font-mono w-10 text-right">{stall.scan_count}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
+
+    <div className="pb-20"></div> {/* Spacer */}
   </section>
 );
 
@@ -420,9 +449,9 @@ const FeaturesGrid = () => (
             <div className="flex-1 w-full h-48 bg-black/40 rounded-xl border border-white/10 flex items-center justify-center relative overflow-hidden">
               {/* Abstract visualization graphic */}
               <div className="absolute inset-0 flex items-center justify-center gap-1 opacity-50">
-                {[...Array(20)].map((_, i) => (
+                {[30, 65, 45, 80, 55, 70, 35, 90, 50, 75, 40, 60, 85, 25, 95, 50, 70, 45, 60, 80].map((h, i) => (
                   <div key={i} className="w-2 bg-cyan-500 rounded-full animate-pulse" style={{
-                    height: `${Math.random() * 100}%`,
+                    height: `${h}%`,
                     animationDelay: `${i * 0.1}s`
                   }}></div>
                 ))}

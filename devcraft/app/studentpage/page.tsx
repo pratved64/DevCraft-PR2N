@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect } from 'react';
-import { Scan, Map, Trophy, Wifi, Battery, AlertTriangle, Sparkles, Navigation, X, ArrowRight, Building2, Users, SignalHigh, HelpCircle, Utensils, Monitor, Briefcase, Music } from 'lucide-react';
+import { Scan, Map, Trophy, Wifi, Battery, AlertTriangle, Sparkles, Navigation, X, ArrowRight, Building2, Users, SignalHigh, HelpCircle, Utensils, Monitor, Briefcase, Music, UserCheck } from 'lucide-react';
 import { fetchStalls, fetchLeaderboard, fetchNotifications, scanStall, fetchMyHistory, type StallInfo, type LeaderboardEntry, type NotificationItem } from '../../lib/api';
 
 // --- PIXEL ART STYLES ---
@@ -184,6 +184,7 @@ export default function StudentDashboard() {
   const [booting, setBooting] = useState(true);
   const [apiLoaded, setApiLoaded] = useState(false);
   const [flashAlert, setFlashAlert] = useState<any>(null);
+  const [friendsMode, setFriendsMode] = useState(false);
 
   // Persist a user id across the session (first user returned from /my-history)
   const [userId, setUserId] = useState<string>('');
@@ -191,6 +192,7 @@ export default function StudentDashboard() {
   // Live data from API (with mock fallback)
   const [sponsors, setSponsors] = useState<any[]>(MOCK_SPONSORS);
   const [leaderboard, setLeaderboard] = useState<any[]>(MOCK_LEADERBOARD);
+  const [tickerText, setTickerText] = useState('⚠️ CROWD ALERT: MAIN STAGE (HIGH TRAFFIC) DETOUR TO TECHCORP FOR FASTER ENTRY! ⚠️');
 
   // Player enters from bottom
   const userPos = { x: 50, y: 95 };
@@ -211,6 +213,8 @@ export default function StudentDashboard() {
           },
           current_pokemon_spawn: s.current_pokemon_spawn,
           crowd_level: s.crowd_level,
+          scan_count_10m: s.scan_count_10m,
+          total_scan_count: s.total_scan_count,
         }));
         if (mapped.length > 0) {
           setSponsors(mapped);
@@ -230,26 +234,41 @@ export default function StudentDashboard() {
           rank: e.rank,
           name: e.name.split(' ')[0].toUpperCase().slice(0, 8),
           score: e.points,
+          pokemon_count: e.pokemon_count,
+          legendaries: e.legendaries_caught,
           sprite: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${(i + 1) * 6}.png`,
         }));
         if (mapped.length > 0) setLeaderboard(mapped);
       })
       .catch(console.error);
 
-    // Fetch notifications for flash events
-    fetchNotifications()
-      .then((notifs) => {
-        const legendaryAlert = notifs.find((n) => n.type === 'legendary_alert');
-        if (legendaryAlert) {
-          setTimeout(() => {
+    // Notifications: fetch once then poll every 30s for new legendary alerts
+    const fetchNotifs = () => {
+      fetchNotifications()
+        .then((notifs) => {
+          const legendaryAlert = notifs.find((n) => n.type === 'legendary_alert');
+          if (legendaryAlert) {
             setFlashAlert({
               stall: legendaryAlert.stall_name,
               rarity: 'LEGENDARY',
             });
-          }, 3000);
-        }
-      })
-      .catch(console.error);
+          }
+          // Build live ticker from all notifications
+          if (notifs.length > 0) {
+            const parts = notifs.map((n) => `${n.type === 'legendary_alert' ? '✨' : '⚠️'} ${n.message}`);
+            setTickerText(parts.join('   ·   '));
+          }
+        })
+        .catch(console.error);
+    };
+    // First fire after 3s (let page settle), then poll every 30s
+    const notifTimer = setTimeout(fetchNotifs, 3000);
+    const notifInterval = setInterval(fetchNotifs, 30000);
+
+    return () => {
+      clearTimeout(notifTimer);
+      clearInterval(notifInterval);
+    };
   }, []);
 
   const handleScan = async () => {
@@ -302,6 +321,34 @@ export default function StudentDashboard() {
     if (sponsor.crowd_level === 'High') return 'CRITICAL';
     if (sponsor.crowd_level === 'Low') return 'RECOMMENDED';
     return 'NORMAL';
+  };
+
+  // Helper: estimated wait time label from scan_count_10m
+  const getWaitLabel = (sponsor: any) => {
+    const count = sponsor?.scan_count_10m ?? 0;
+    if (count >= 20) return `~${Math.floor(count * 1.8)}m wait`;
+    if (count >= 5)  return `~${Math.floor(count * 0.8)}m wait`;
+    return '<2m wait';
+  };
+
+  // Toggle friends leaderboard
+  const toggleFriends = () => {
+    const next = !friendsMode;
+    setFriendsMode(next);
+    fetchLeaderboard(next ? 'friends' : undefined, userId || undefined)
+      .then((lb) => {
+        const mapped = lb.map((e, i) => ({
+          rank: e.rank,
+          name: e.name.split(' ')[0].toUpperCase().slice(0, 8),
+          score: e.points,
+          pokemon_count: e.pokemon_count,
+          legendaries: e.legendaries_caught,
+          // Sprite: cycle through well-known Pokémon IDs for visual variety
+          sprite: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${[25,120,74,6,393,143,39,54,131,149][i % 10]}.png`,
+        }));
+        if (mapped.length > 0) setLeaderboard(mapped);
+      })
+      .catch(console.error);
   };
 
   // Helper: Icon Logic
@@ -450,7 +497,7 @@ export default function StudentDashboard() {
                                   <div className="font-console text-sm flex items-center gap-2 mt-1">
                                     <Users size={12} />
                                     <span className={getStatus(activeSponsor) === 'CRITICAL' ? 'text-red-700 blink' : ''}>
-                                      {getStatus(activeSponsor) === 'CRITICAL' ? 'HIGH CROWD (>45m)' : 'LOW CROWD (<5m)'}
+                                      {getStatus(activeSponsor) === 'CRITICAL' ? 'HIGH CROWD' : 'LOW CROWD'} · {getWaitLabel(activeSponsor)}
                                     </span>
                                   </div>
                                 </div>
@@ -495,7 +542,31 @@ export default function StudentDashboard() {
                   {/* --- VIEW: SCANNER --- */}
                   {view === 'SCAN' && (
                     <div className="flex-1 relative flex flex-col bg-[#8bac0f]/30">
-                      <div className="flex-1 m-4 border-4 border-[#0f380f] relative p-2 flex flex-col items-center justify-center bg-[#8bac0f] shadow-inner">
+                      {/* Stall selector — pick target before scanning */}
+                      {!activeSponsor && (
+                        <div className="m-2 border-2 border-[#0f380f] bg-[#9bbc0f] p-2">
+                          <div className="font-pixel text-[8px] mb-2 text-center">SELECT TARGET STALL</div>
+                          <div className="max-h-[180px] overflow-y-auto pixel-scrollbar space-y-1">
+                            {sponsors.map((sp) => (
+                              <button
+                                key={sp._id}
+                                onClick={() => setActiveSponsor(sp)}
+                                className="w-full text-left flex items-center gap-2 p-2 border border-[#0f380f] hover:bg-[#0f380f] hover:text-[#9bbc0f] font-pixel text-[7px] transition-colors"
+                              >
+                                <span className="flex-1 truncate">{sp.company_name}</span>
+                                {sp.current_pokemon_spawn?.rarity === 'Legendary' && <span className="text-[#f57f17]">✨</span>}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      {activeSponsor && (
+                        <div className="mx-2 mt-2 flex items-center justify-between border-2 border-[#0f380f] bg-[#0f380f] text-[#9bbc0f] px-2 py-1">
+                          <span className="font-pixel text-[8px] truncate">{activeSponsor.company_name}</span>
+                          <button onClick={() => setActiveSponsor(null)} className="font-pixel text-[8px] ml-2 opacity-70 hover:opacity-100">✕</button>
+                        </div>
+                      )}
+                      <div className="flex-1 m-2 border-4 border-[#0f380f] relative p-2 flex flex-col items-center justify-center bg-[#8bac0f] shadow-inner">
                         {scanning ? (
                           <div className="flex flex-col items-center">
                             <div className="w-full h-1 bg-[#0f380f] absolute top-10 animate-[scan_2s_infinite]"></div>
@@ -504,13 +575,17 @@ export default function StudentDashboard() {
                         ) : (
                           <div className="text-center opacity-60">
                             <Scan size={64} className="mx-auto mb-2 text-[#0f380f]" />
-                            <div className="font-pixel text-[8px]">LOCATE QR CODE</div>
+                            <div className="font-pixel text-[8px]">{activeSponsor ? `READY: ${activeSponsor.company_name.slice(0,10)}` : 'SELECT STALL ABOVE'}</div>
                           </div>
                         )}
                       </div>
                       <div className="p-4 pt-0">
-                        <button onClick={handleScan} className="w-full bg-[#0f380f] text-[#9bbc0f] font-pixel text-xs py-4 border-b-4 border-[#051c05] active:translate-y-1 active:border-b-0">
-                          INITIATE SCAN
+                        <button
+                          onClick={handleScan}
+                          disabled={!activeSponsor}
+                          className="w-full bg-[#0f380f] text-[#9bbc0f] font-pixel text-xs py-4 border-b-4 border-[#051c05] active:translate-y-1 active:border-b-0 disabled:opacity-40 disabled:cursor-not-allowed"
+                        >
+                          {activeSponsor ? 'INITIATE SCAN' : 'NO TARGET'}
                         </button>
                       </div>
                     </div>
@@ -518,23 +593,37 @@ export default function StudentDashboard() {
 
                   {/* --- VIEW: LEADERBOARD --- */}
                   {view === 'RANK' && (
-                    <div className="flex-1 overflow-y-auto pixel-scrollbar p-2 bg-[#9bbc0f]">
-                      <div className="text-center font-pixel text-[10px] py-2 border-b-4 border-[#0f380f] mb-2 bg-[#8bac0f]">
-                        RIVAL RANKINGS
+                    <div className="flex-1 overflow-y-auto pixel-scrollbar flex flex-col bg-[#9bbc0f]">
+                      {/* Header + Toggle */}
+                      <div className="flex items-center justify-between font-pixel text-[10px] py-2 px-2 border-b-4 border-[#0f380f] bg-[#8bac0f]">
+                        <span>{friendsMode ? 'FRIENDS' : 'GLOBAL'}</span>
+                        <button
+                          onClick={toggleFriends}
+                          className={`flex items-center gap-1 px-2 py-1 border-2 border-[#0f380f] text-[8px] transition-colors ${friendsMode ? 'bg-[#0f380f] text-[#9bbc0f]' : 'bg-[#9bbc0f] text-[#0f380f]'}`}
+                        >
+                          <UserCheck size={8} /> {friendsMode ? 'ALL' : 'RIVALS'}
+                        </button>
                       </div>
-                      {leaderboard.map((user, idx) => (
-                        <div key={user.name} className={`flex items-center gap-3 p-3 border-b-2 border-[#306230] mb-2 ${user.name === 'YOU' ? 'bg-[#0f380f] text-[#9bbc0f] border-l-4 border-l-yellow-500' : 'bg-[#8bac0f]'}`}>
-                          <div className="font-pixel text-lg w-8">#{user.rank}</div>
-                          <div className="w-10 h-10 border-2 border-[#0f380f] bg-[#9bbc0f] flex items-center justify-center">
-                            <img src={user.sprite} className="w-8 h-8 sprite" />
+                      <div className="flex-1 overflow-y-auto pixel-scrollbar p-2">
+                        {leaderboard.map((user, idx) => (
+                          <div key={user.name + idx} className={`flex items-center gap-3 p-3 border-b-2 border-[#306230] mb-2 ${user.name === 'YOU' || (userId && user.name === 'YOU') ? 'bg-[#0f380f] text-[#9bbc0f] border-l-4 border-l-yellow-500' : 'bg-[#8bac0f]'}`}>
+                            <div className="font-pixel text-lg w-8">#{user.rank}</div>
+                            <div className="w-10 h-10 border-2 border-[#0f380f] bg-[#9bbc0f] flex items-center justify-center">
+                              <img src={user.sprite} className="w-8 h-8 sprite" alt={user.name} />
+                            </div>
+                            <div className="flex-1">
+                              <div className="font-pixel text-xs">{user.name}</div>
+                              <div className="font-console text-sm opacity-80">{user.score} PTS</div>
+                              {user.pokemon_count != null && (
+                                <div className="font-console text-xs opacity-60">
+                                  {user.pokemon_count} caught · {user.legendaries ?? 0} ✨
+                                </div>
+                              )}
+                            </div>
+                            {idx === 0 && <Trophy size={20} className="text-yellow-700" />}
                           </div>
-                          <div className="flex-1">
-                            <div className="font-pixel text-xs">{user.name}</div>
-                            <div className="font-console text-sm opacity-80">{user.score} PTS</div>
-                          </div>
-                          {idx === 0 && <Trophy size={20} className="text-yellow-700" />}
-                        </div>
-                      ))}
+                        ))}
+                      </div>
                     </div>
                   )}
 
@@ -542,7 +631,7 @@ export default function StudentDashboard() {
                   <div className="bg-[#0f380f] text-[#9bbc0f] py-1 border-t-4 border-[#0f380f] relative z-20">
                     <div className="whitespace-nowrap overflow-hidden">
                       <div className="inline-block animate-[marquee_10s_linear_infinite] font-console text-sm">
-                        ⚠️ CROWD ALERT: MAIN STAGE (HIGH TRAFFIC) DETOUR TO TECHCORP FOR FASTER ENTRY! ⚠️
+                        {tickerText}
                       </div>
                     </div>
                   </div>
