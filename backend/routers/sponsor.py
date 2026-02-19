@@ -1,136 +1,154 @@
 """
 EventFlow – Sponsor Router
 Sponsor dashboard: scan candidates, view stall analytics with ROI metrics.
+All data sourced from MongoDB via async Motor.
 """
 
 from __future__ import annotations
 
-from collections import Counter
+from bson import ObjectId
+from fastapi import APIRouter, HTTPException
 
-from fastapi import APIRouter, Depends, HTTPException
-
-from auth import get_current_user
-from mock_db import STALLS, TRANSACTIONS, USERS
+from database import get_db
 from models import AnalyticsResponse, ScanCandidateRequest, ScanCandidateResponse
+from utils.analytics import (
+    calculate_avg_wait_time,
+    calculate_cpi,
+    calculate_cross_pollination,
+    calculate_flash_sale_lift,
+)
 
 router = APIRouter(prefix="/api/sponsor", tags=["Sponsor"])
 
 
 # ──────────────────── POST /scan-candidate ────────────────────────────
 
+
 @router.post("/scan-candidate", response_model=ScanCandidateResponse)
-async def scan_candidate(
-    body: ScanCandidateRequest,
-    _user_id: int = Depends(get_current_user),
-):
+async def scan_candidate(body: ScanCandidateRequest):
     """Scan a student's badge — return their resume and skills for hiring."""
-    user = USERS.get(body.user_id)
+    db = get_db()
+
+    try:
+        user = await db.users.find_one({"_id": ObjectId(body.user_id)})
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid user_id format")
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
+    demographics = user.get("demographics", {})
+
     return ScanCandidateResponse(
-        user_id=user.id,
-        name=user.name,
-        department=user.department,
-        resume_url=user.resume_url,
-        skills=user.skills,
+        user_id=str(user["_id"]),
+        name=user.get("name", ""),
+        email=user.get("email", ""),
+        demographics=demographics,
+        resume_url=user.get("resume_url"),
+        skills=user.get("skills", []),
     )
 
 
 # ──────────────────── GET /analytics/{stall_id} ──────────────────────
 
+
 @router.get("/analytics/{stall_id}", response_model=AnalyticsResponse)
-async def stall_analytics(
-    stall_id: int,
-    _user_id: int = Depends(get_current_user),
-):
+async def stall_analytics(stall_id: str):
     """
     Full sponsor analytics dashboard for a stall:
-      - Total Footfall
-      - Peak Traffic Hour
-      - Anonymous Demographics (department breakdown)
-      - Scan Rate % (visitors / total users)
-      - Cost per Interaction
-      - Average Wait Time
-      - Cross Pollination Rate (dynamic)
+      - Total Footfall (distinct students)
+      - Peak Traffic Hour (aggregation by hour)
+      - Anonymous Demographics (major breakdown)
+      - Cost per Interaction (sponsorship_cost / total_scans)
+      - Average Wait Time (mean scan-to-scan delta)
+      - Cross Pollination Rate
       - Flash Sale Lift
     """
-    stall = STALLS.get(stall_id)
-    if not stall:
+    db = get_db()
+
+    try:
+        sponsor_oid = ObjectId(stall_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid stall_id format")
+
+    sponsor = await db.sponsors.find_one({"_id": sponsor_oid})
+    if not sponsor:
         raise HTTPException(status_code=404, detail="Stall not found")
 
+    scans_col = db.scanevents
+
+    # ── Total footfall (unique students) ──
+    unique_students = await scans_col.distinct("student_id", {"sponsor_id": sponsor_oid})
+    total_footfall = len(unique_students)
+    total_scans = await scans_col.count_documents({"sponsor_id": sponsor_oid})
+
     # ── Peak traffic hour ──
-    if stall.visit_timestamps:
-        hour_counts: Counter[int] = Counter(ts.hour for ts in stall.visit_timestamps)
-        peak_hour = hour_counts.most_common(1)[0][0]
-    else:
-        peak_hour = 14
+    peak_pipeline = [
+        {"$match": {"sponsor_id": sponsor_oid}},
+        {"$group": {"_id": {"$hour": "$timestamp"}, "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 1},
+    ]
+    peak_result = await scans_col.aggregate(peak_pipeline).to_list(length=1)
+    peak_hour = peak_result[0]["_id"] if peak_result else None
 
-    # ── Find all visitors of this stall ──
-    visitor_user_ids: set[int] = set()
-    for uid, user in USERS.items():
-        for entry in user.pokemon_dex:
-            if entry.get("stall_id") == stall_id:
-                visitor_user_ids.add(uid)
-    # Also from transactions
-    for tx in TRANSACTIONS:
-        if tx.stall_id == stall_id:
-            visitor_user_ids.add(tx.user_id)
+    # ── Demographics (group by major) ──
+    demo_pipeline = [
+        {"$match": {"sponsor_id": sponsor_oid}},
+        {"$group": {"_id": "$student_id"}},
+        {
+            "$lookup": {
+                "from": "users",
+                "localField": "_id",
+                "foreignField": "_id",
+                "as": "user",
+            }
+        },
+        {"$unwind": "$user"},
+        {
+            "$group": {
+                "_id": "$user.demographics.major",
+                "count": {"$sum": 1},
+            }
+        },
+    ]
+    demo_result = await scans_col.aggregate(demo_pipeline).to_list(length=50)
+    demographics = {
+        entry["_id"]: entry["count"]
+        for entry in demo_result
+        if entry["_id"] is not None
+    }
+    if not demographics:
+        demographics = {"Unknown": total_footfall}
 
-    # ── Demographics (department breakdown) ──
-    dept_counter: Counter[str] = Counter()
-    for uid in visitor_user_ids:
-        user = USERS.get(uid)
-        if user:
-            dept_counter[user.department] += 1
-    demographics = dict(dept_counter) if dept_counter else {"CS": 40, "IT": 20, "DevOps": 10}
+    # ── Cost per Interaction ──
+    sponsorship_cost = sponsor.get("sponsorship_package_cost", 0)
+    cpi = calculate_cpi(sponsorship_cost, total_scans)
 
-    # ── Scan rate % ──
-    total_users = len(USERS) if len(USERS) > 0 else 1
-    scan_rate_pct = round((len(visitor_user_ids) / total_users) * 100, 1)
+    # ── Average Wait Time ──
+    ts_cursor = scans_col.find(
+        {"sponsor_id": sponsor_oid}, {"timestamp": 1}
+    ).sort("timestamp", 1)
+    timestamps = [doc["timestamp"] for doc in await ts_cursor.to_list(length=5000)]
+    avg_wait = calculate_avg_wait_time(timestamps)
 
-    # ── Cost per interaction ──
-    visits = stall.visitor_count if stall.visitor_count > 0 else 1
-    cost_per_interaction = round(stall.sponsorship_amount / visits, 2)
+    # ── Cross Pollination ──
+    cross_poll = await calculate_cross_pollination(stall_id, db)
 
-    # ── Average wait time ──
-    if len(stall.visit_timestamps) >= 2:
-        sorted_ts = sorted(stall.visit_timestamps)
-        diffs = [
-            (sorted_ts[i + 1] - sorted_ts[i]).total_seconds()
-            for i in range(len(sorted_ts) - 1)
-        ]
-        avg_seconds = sum(diffs) / len(diffs)
-        minutes = int(avg_seconds // 60)
-        seconds = int(avg_seconds % 60)
-        avg_wait_time = f"{minutes}m {seconds}s"
-    else:
-        avg_wait_time = "N/A (insufficient data)"
-
-    # ── Cross pollination (dynamic) ──
-    # % of this stall's visitors who also visited at least one other stall
-    if visitor_user_ids:
-        cross_count = 0
-        for uid in visitor_user_ids:
-            user = USERS.get(uid)
-            if user:
-                other_stalls = {p["stall_id"] for p in user.pokemon_dex if p["stall_id"] != stall_id}
-                if other_stalls:
-                    cross_count += 1
-        cross_pct = round((cross_count / len(visitor_user_ids)) * 100, 1)
-        cross_pollination = f"{cross_pct}% also visited another stall"
-    else:
-        cross_pollination = "N/A (no visitors yet)"
+    # ── Flash Sale Lift ──
+    flash_scans = await scans_col.count_documents(
+        {"sponsor_id": sponsor_oid, "is_flash_sale": True}
+    )
+    flash_lift = calculate_flash_sale_lift(flash_scans, total_scans)
 
     return AnalyticsResponse(
-        stall_id=stall.id,
-        stall_name=stall.name,
-        total_footfall=stall.visitor_count,
+        stall_id=str(sponsor["_id"]),
+        stall_name=sponsor.get("company_name", "Unknown"),
+        total_footfall=total_footfall,
         peak_traffic_hour=peak_hour,
         demographics=demographics,
-        scan_rate_pct=scan_rate_pct,
-        cost_per_interaction=cost_per_interaction,
-        avg_wait_time=avg_wait_time,
-        cross_pollination=cross_pollination,
-        flash_sale_lift="15% increase during low-crowd windows",
+        cost_per_interaction=cpi,
+        avg_wait_time=avg_wait,
+        cross_pollination=cross_poll,
+        flash_sale_lift=flash_lift,
     )

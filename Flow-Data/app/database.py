@@ -7,12 +7,19 @@ from contextlib import asynccontextmanager
 from dotenv import load_dotenv
 
 load_dotenv()
-MONGODB_URI = os.getenv("MONGODB_URI")
+MONGODB_URI = os.getenv(
+    "MONGODB_URI",
+    "mongodb+srv://devcraft_user:djgoated@devcraft.uwfotw7.mongodb.net/?appName=devcraft",
+)
+DB_NAME = os.getenv("DB_NAME", "test")
+
 
 class Database:
     client: AsyncIOMotorClient = None
 
+
 db = Database()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -25,6 +32,14 @@ async def lifespan(app: FastAPI):
     yield
     print("🛑 Shutting down: Closing MongoDB connection...")
     db.client.close()
+
+
+def get_db():
+    """Return the active database handle."""
+    if db.client is None:
+        raise RuntimeError("Database not initialised – is the app running?")
+    return db.client.get_database(DB_NAME)
+
 
 # --- Custom Database Helper Functions ---
 

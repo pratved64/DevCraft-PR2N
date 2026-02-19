@@ -1,11 +1,11 @@
 """
 EventFlow – General Router
-Homepage: dynamic aggregate stats from in-memory data.
+Homepage: dynamic aggregate stats from MongoDB.
 """
 
 from fastapi import APIRouter
 
-from mock_db import STALLS, TRANSACTIONS, USERS
+from database import get_db
 from models import StatsResponse
 
 router = APIRouter(prefix="/api/general", tags=["General"])
@@ -13,30 +13,49 @@ router = APIRouter(prefix="/api/general", tags=["General"])
 
 @router.get("/stats", response_model=StatsResponse)
 async def get_stats():
-    """Return live aggregate event statistics from in-memory data."""
+    """Return live aggregate event statistics from MongoDB."""
+    db = get_db()
 
-    total_attendees = len(USERS)
-    total_stalls = len(STALLS)
-    total_transactions = len(TRANSACTIONS)
+    total_attendees = await db.users.count_documents({})
+    total_sponsors = await db.sponsors.count_documents({})
+    total_scans = await db.scanevents.count_documents({})
 
-    # Total pokemon caught across all users
-    total_pokemon = sum(len(u.pokemon_dex) for u in USERS.values())
-    legendary_count = sum(
-        1
-        for u in USERS.values()
-        for entry in u.pokemon_dex
-        if entry.get("rarity") == "Legendary"
+    # Legendary count
+    legendary_count = await db.scanevents.count_documents(
+        {"pokemon_caught.rarity": "Legendary"}
     )
 
-    # Top stall by visitor_count
-    top_stall = max(STALLS.values(), key=lambda s: s.visitor_count)
+    # Top stall: sponsor with the most scans
+    top_pipeline = [
+        {"$group": {"_id": "$sponsor_id", "count": {"$sum": 1}}},
+        {"$sort": {"count": -1}},
+        {"$limit": 1},
+        {
+            "$lookup": {
+                "from": "sponsors",
+                "localField": "_id",
+                "foreignField": "_id",
+                "as": "sponsor",
+            }
+        },
+        {"$unwind": {"path": "$sponsor", "preserveNullAndEmptyArrays": True}},
+        {
+            "$project": {
+                "_id": 0,
+                "company_name": "$sponsor.company_name",
+                "count": 1,
+            }
+        },
+    ]
+    cursor = db.scanevents.aggregate(top_pipeline)
+    top_result = await cursor.to_list(length=1)
+    top_stall = top_result[0]["company_name"] if top_result else "N/A"
 
     return StatsResponse(
         total_attendees=total_attendees,
-        total_stalls=total_stalls,
-        top_stall=top_stall.name,
-        total_transactions=total_transactions,
-        total_pokemon_caught=total_pokemon,
+        total_sponsors=total_sponsors,
+        total_scans=total_scans,
+        top_stall=top_stall,
         legendary_count=legendary_count,
         highlight="⚡ Legendary Pokémon spawning at low-crowd stalls – explore now!",
     )

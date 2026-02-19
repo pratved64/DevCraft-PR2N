@@ -1,22 +1,73 @@
 "use client";
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { Activity, AlertTriangle, Server, Wifi } from 'lucide-react';
+import { fetchStalls, fetchStats, type StallInfo, type Stats } from '../../lib/api';
 
-// --- Mock Data ---
-const stallLeaderboard = [
+// --- Fallback Mock Data ---
+const MOCK_STALL_LEADERBOARD = [
   { name: 'Google Cloud Stall', scans: 1240, status: 'Active' },
   { name: 'Red Bull Zone', scans: 1100, status: 'Active' },
   { name: 'Coding Club', scans: 850, status: 'Active' },
   { name: 'Art Gallery', scans: 320, status: 'Low Traffic' },
 ];
 
-const fraudAlerts = [
+const MOCK_FRAUD_ALERTS = [
   { id: 1, user: 'User_992', reason: 'Velocity Check (>3 scans/10s)', time: '14:32' },
   { id: 2, user: 'User_104', reason: 'Duplicate Resume Drop', time: '13:15' },
 ];
 
 export default function OrganizerPage() {
+  const [stallLeaderboard, setStallLeaderboard] = useState(MOCK_STALL_LEADERBOARD);
+  const [fraudAlerts] = useState(MOCK_FRAUD_ALERTS);
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  useEffect(() => {
+    // 1. Initial REST Fetch
+    fetchStalls()
+      .then((stalls) => {
+        const mapped = stalls
+          .map((s) => ({
+            id: s.stall_id,
+            name: s.company_name,
+            scans: s.scan_count_10m,
+            status: s.crowd_level === 'Low' ? 'Low Traffic' : 'Active',
+          }))
+          .sort((a, b) => b.scans - a.scans);
+        if (mapped.length > 0) setStallLeaderboard(mapped);
+      })
+      .catch(console.error);
+
+    fetchStats().then(setStats).catch(console.error);
+
+    // 2. WebSocket for Live Heatmap
+    const wsUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/^http/, 'ws') + '/api/game/heatmap';
+    const ws = new WebSocket(wsUrl);
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.heatmap) {
+          const updated = data.heatmap.map((h: any) => ({
+            id: h.stall_id,
+            name: h.stall_name,
+            scans: h.scan_count,
+            status: h.crowd_level === 'Low' ? 'Low Traffic' : 'Active',
+          })).sort((a: any, b: any) => b.scans - a.scans);
+          setStallLeaderboard(updated);
+        }
+      } catch (e) {
+        console.error("WS Parse Error", e);
+      }
+    };
+
+    return () => {
+      if (ws.readyState === 1) ws.close();
+    };
+  }, []);
+
+  const maxScans = stallLeaderboard.length > 0 ? Math.max(...stallLeaderboard.map(s => s.scans), 1) : 1500;
+
   return (
     <div className="p-8 bg-gray-950 min-h-screen font-sans text-gray-100">
       <header className="mb-8 flex justify-between items-center border-b border-gray-800 pb-6">
@@ -27,6 +78,28 @@ export default function OrganizerPage() {
           <p className="text-gray-400 mt-1">Central Command & Logistics</p>
         </div>
         <div className="flex gap-4">
+          {stats && (
+            <>
+              <div className="bg-gray-900 px-4 py-2 rounded-lg border border-gray-800 flex items-center gap-3">
+                <div className="text-right">
+                  <span className="text-xs text-gray-500 block uppercase tracking-wider">Attendees</span>
+                  <span className="text-blue-400 text-sm font-bold">{stats.total_attendees.toLocaleString()}</span>
+                </div>
+              </div>
+              <div className="bg-gray-900 px-4 py-2 rounded-lg border border-gray-800 flex items-center gap-3">
+                <div className="text-right">
+                  <span className="text-xs text-gray-500 block uppercase tracking-wider">Sponsors</span>
+                  <span className="text-purple-400 text-sm font-bold">{stats.total_sponsors}</span>
+                </div>
+              </div>
+              <div className="bg-gray-900 px-4 py-2 rounded-lg border border-gray-800 flex items-center gap-3">
+                <div className="text-right">
+                  <span className="text-xs text-gray-500 block uppercase tracking-wider">Total Scans</span>
+                  <span className="text-blue-400 text-sm font-bold">{stats.total_scans.toLocaleString()}</span>
+                </div>
+              </div>
+            </>
+          )}
           <div className="bg-gray-900 px-4 py-2 rounded-lg border border-gray-800 flex items-center gap-3">
             <div className={`w-2 h-2 rounded-full bg-green-500 animate-pulse`}></div>
             <div>
@@ -54,9 +127,9 @@ export default function OrganizerPage() {
                       <span className="text-sm text-gray-400 font-mono">{stall.scans} scans</span>
                     </div>
                     <div className="w-full bg-gray-700 rounded-full h-1.5 overflow-hidden">
-                      <div 
+                      <div
                         className={`h-full rounded-full ${index === 0 ? 'bg-gradient-to-r from-blue-500 to-purple-500' : 'bg-blue-600'}`}
-                        style={{ width: `${(stall.scans / 1500) * 100}%` }}
+                        style={{ width: `${(stall.scans / maxScans) * 100}%` }}
                       ></div>
                     </div>
                   </div>

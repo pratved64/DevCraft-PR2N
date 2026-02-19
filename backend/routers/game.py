@@ -2,166 +2,232 @@
 EventFlow – Game Router
 Student gameplay: scan stalls, view history, leaderboard, stalls map,
 notifications, and live heatmap via WebSocket.
+All data sourced from MongoDB via async Motor.
 """
 
 from __future__ import annotations
 
 import asyncio
 import random
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from bson import ObjectId
+from fastapi import APIRouter, Header, Query, WebSocket, WebSocketDisconnect
 
-from auth import get_current_user
-from mock_db import STALLS, TRANSACTIONS, USERS
+from database import get_db
 from models import (
+    HistoryResponse,
     LeaderboardEntry,
     NotificationItem,
+    PokemonInfo,
     ScanRequest,
     ScanResponse,
     StallInfo,
-    Transaction,
+    serialize_doc,
 )
 
 router = APIRouter(prefix="/api/game", tags=["Game"])
 
-
-# ──────────────────────── Helpers ──────────────────────────────────────
+# ──────────────────────── Pokémon Pools ────────────────────────────────
 
 COMMON_POKEMON = [
-    "Pikachu", "Bulbasaur", "Squirtle", "Eevee", "Jigglypuff",
-    "Snorlax", "Psyduck", "Togepi", "Magikarp", "Ditto",
+    {"name": "Pikachu", "type": "Electric"},
+    {"name": "Bulbasaur", "type": "Grass"},
+    {"name": "Squirtle", "type": "Water"},
+    {"name": "Eevee", "type": "Normal"},
+    {"name": "Jigglypuff", "type": "Normal"},
+    {"name": "Snorlax", "type": "Normal"},
+    {"name": "Psyduck", "type": "Water"},
+    {"name": "Magikarp", "type": "Water"},
+    {"name": "Charmander", "type": "Fire"},
+    {"name": "Rattata", "type": "Normal"},
 ]
 
 LEGENDARY_POKEMON = [
-    "Mewtwo", "Rayquaza", "Charizard", "Dragonite", "Gengar",
-    "Articuno", "Zapdos", "Moltres", "Lugia", "Ho-Oh",
+    {"name": "Mewtwo", "type": "Psychic"},
+    {"name": "Rayquaza", "type": "Dragon"},
+    {"name": "Charizard", "type": "Fire"},
+    {"name": "Dragonite", "type": "Dragon"},
+    {"name": "Gengar", "type": "Ghost"},
+    {"name": "Articuno", "type": "Ice"},
+    {"name": "Zapdos", "type": "Electric"},
+    {"name": "Moltres", "type": "Fire"},
+    {"name": "Lugia", "type": "Psychic"},
+    {"name": "Ho-Oh", "type": "Fire"},
 ]
 
-
-def _get_crowd_threshold() -> float:
-    """Bottom 40th-percentile visitor_count = low crowd threshold."""
-    counts = sorted(s.visitor_count for s in STALLS.values())
-    idx = max(0, int(len(counts) * 0.4) - 1)
-    return counts[idx]
+LOW_TRAFFIC_THRESHOLD = 5  # < 5 scans in 10 min = Legendary
+LEGENDARY_POINTS = 50
+COMMON_POINTS = 10
 
 
-def _stall_wait_time(stall) -> float:
-    """Mock wait time in minutes derived from recent scan frequency."""
-    if len(stall.visit_timestamps) < 2:
-        return round(random.uniform(1.0, 3.0), 1)
-    sorted_ts = sorted(stall.visit_timestamps)
-    recent = sorted_ts[-5:]  # last 5 scans
-    if len(recent) >= 2:
-        diffs = [(recent[i + 1] - recent[i]).total_seconds() for i in range(len(recent) - 1)]
-        avg_gap = sum(diffs) / len(diffs)
-        # More frequent scans → longer wait
-        return round(min(avg_gap / 60, 30.0), 1)
-    return round(random.uniform(2.0, 8.0), 1)
+# ──────────────────────── Helpers ──────────────────────────────────────
 
 
-def _crowd_level(stall) -> str:
-    threshold = _get_crowd_threshold()
-    if stall.visitor_count <= threshold:
-        return "Low"
-    elif stall.visitor_count <= threshold * 2:
-        return "Medium"
-    return "High"
+async def _recent_scan_count(db, sponsor_oid: ObjectId, minutes: int = 10) -> int:
+    """Count scans at this sponsor in the last N minutes."""
+    threshold = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    return await db.scanevents.count_documents(
+        {"sponsor_id": sponsor_oid, "timestamp": {"$gte": threshold}}
+    )
 
 
 # ──────────────────────── GET /my-history ──────────────────────────────
 
+
 @router.get("/my-history")
-async def my_history(user_id: int = Depends(get_current_user)):
-    """Return the current user's pokemon_dex; grouped by stall."""
-    user = USERS.get(user_id)
+async def my_history(x_user_id: str = Header(default="")):
+    """
+    Return the authenticated user's pokedex (scan events) and total points.
+    """
+    db = get_db()
+
+    # If a user id is given, try to look them up
+    if x_user_id:
+        try:
+            user = await db.users.find_one({"_id": ObjectId(x_user_id)})
+        except Exception:
+            user = None
+    else:
+        # Fallback: return the first user in the DB for demo purposes
+        user = await db.users.find_one()
+
     if not user:
-        return {"error": "User not found"}
+        return HistoryResponse(
+            user_id="",
+            name="Guest",
+            total_points=0,
+            legendaries_caught=0,
+            pokedex=[],
+        )
 
-    legendary_count = sum(1 for p in user.pokemon_dex if p.get("rarity") == "Legendary")
-    common_count = sum(1 for p in user.pokemon_dex if p.get("rarity") == "Common")
-    unique_stalls = len({p["stall_id"] for p in user.pokemon_dex})
+    # Fetch the user's scan events (their pokedex)
+    pokedex_ids = user.get("pokedex", [])
+    scans = []
+    if pokedex_ids:
+        cursor = db.scanevents.find({"_id": {"$in": pokedex_ids}})
+        scans = await cursor.to_list(length=500)
 
-    return {
-        "user_id": user.id,
-        "name": user.name,
-        "points": user.points,
-        "pokemon_dex": user.pokemon_dex,
-        "total_pokemon": len(user.pokemon_dex),
-        "legendary_count": legendary_count,
-        "common_count": common_count,
-        "unique_stalls_visited": unique_stalls,
-    }
+    return HistoryResponse(
+        user_id=str(user["_id"]),
+        name=user.get("name", "Unknown"),
+        total_points=user.get("wallet", {}).get("total_points", 0),
+        legendaries_caught=user.get("wallet", {}).get("legendaries_caught", 0),
+        pokedex=[serialize_doc(s) for s in scans],
+    )
 
 
 # ──────────────────────── POST /scan ──────────────────────────────────
 
+
 @router.post("/scan", response_model=ScanResponse)
-async def scan_stall(body: ScanRequest, user_id: int = Depends(get_current_user)):
+async def scan_stall(body: ScanRequest, x_user_id: str = Header(default="")):
     """
-    Scan a stall QR code to claim a Pokémon:
-      1. Increment visitor_count & append timestamp
-      2. Low-crowd stalls (bottom 40%) → Legendary Pokémon + 25 pts
-      3. Other stalls → Common Pokémon + 10 pts
+    The Core Scan Loop:
+      1. Count scans in last 10 min (Crowd Density).
+      2. Rarity Algorithm: < LOW_TRAFFIC_THRESHOLD → Legendary + bonus pts.
+      3. Flash Sale Trigger: low-traffic stall → is_flash_sale = True.
+      4. Insert scan event, update user wallet & pokedex.
+      5. If low traffic, update sponsor's current_pokemon_spawn to Legendary.
     """
-    stall = STALLS.get(body.stall_id)
-    if not stall:
+    db = get_db()
+
+    try:
+        sponsor_oid = ObjectId(body.sponsor_id)
+    except Exception:
         return ScanResponse(
             stall_name="Unknown",
-            pokemon_name="MissingNo",
-            pokemon_type="Common",
+            pokemon=PokemonInfo(name="MissingNo", type="Unknown", rarity="Normal"),
             visitor_count=0,
             is_flash_sale=False,
             points_earned=0,
         )
 
-    # 1: Update stall
-    stall.visitor_count += 1
-    now = datetime.now()
-    stall.visit_timestamps.append(now)
+    sponsor = await db.sponsors.find_one({"_id": sponsor_oid})
+    if not sponsor:
+        return ScanResponse(
+            stall_name="Unknown",
+            pokemon=PokemonInfo(name="MissingNo", type="Unknown", rarity="Normal"),
+            visitor_count=0,
+            is_flash_sale=False,
+            points_earned=0,
+        )
 
-    # 2: Determine rarity — low crowd = Legendary
-    threshold = _get_crowd_threshold()
-    is_legendary = stall.visitor_count <= threshold
+    # 1. Crowd density
+    recent_scans = await _recent_scan_count(db, sponsor_oid)
+    is_legendary = recent_scans < LOW_TRAFFIC_THRESHOLD
     is_flash_sale = is_legendary
 
+    # 2. Pick pokémon
     if is_legendary:
-        pokemon_name = random.choice(LEGENDARY_POKEMON)
+        poke = random.choice(LEGENDARY_POKEMON)
         rarity = "Legendary"
-        points_earned = 25
+        points_earned = LEGENDARY_POINTS
     else:
-        pokemon_name = random.choice(COMMON_POKEMON)
-        rarity = "Common"
-        points_earned = 10
+        poke = random.choice(COMMON_POKEMON)
+        rarity = "Normal"
+        points_earned = COMMON_POINTS
 
-    # Record transaction
-    tx = Transaction(
-        user_id=user_id,
-        stall_id=stall.id,
-        timestamp=now,
-        is_flash_sale=is_flash_sale,
-        pokemon_name=pokemon_name,
-        rarity=rarity,
-    )
-    TRANSACTIONS.append(tx)
+    now = datetime.now(timezone.utc)
 
-    # Add to user's pokemon_dex
-    user = USERS.get(user_id)
-    if user:
-        user.pokemon_dex.append({
-            "stall_id": stall.id,
-            "stall_name": stall.name,
-            "pokemon": pokemon_name,
+    # 3. Insert scan event
+    try:
+        student_oid = ObjectId(x_user_id) if x_user_id else None
+    except Exception:
+        student_oid = None
+
+    scan_doc = {
+        "student_id": student_oid,
+        "sponsor_id": sponsor_oid,
+        "timestamp": now,
+        "pokemon_caught": {
+            "name": poke["name"],
+            "type": poke["type"],
             "rarity": rarity,
-            "visited_at": str(now),
-        })
-        user.points += points_earned
+        },
+        "points_awarded": points_earned,
+        "is_flash_sale": is_flash_sale,
+        "sync_status": True,
+    }
+    result = await db.scanevents.insert_one(scan_doc)
+    scan_event_id = result.inserted_id
+
+    # 4. Update user wallet & pokedex
+    if student_oid:
+        try:
+            update_fields: dict = {
+                "$inc": {"wallet.total_points": points_earned},
+                "$push": {"pokedex": scan_event_id},
+            }
+            if is_legendary:
+                update_fields["$inc"]["wallet.legendaries_caught"] = 1
+
+            await db.users.update_one(
+                {"_id": student_oid}, update_fields
+            )
+        except Exception:
+            pass  # Non-critical: user might not exist yet
+
+    # 5. If low traffic, update sponsor's pokemon spawn
+    if is_legendary:
+        await db.sponsors.update_one(
+            {"_id": sponsor_oid},
+            {
+                "$set": {
+                    "current_pokemon_spawn.name": poke["name"],
+                    "current_pokemon_spawn.rarity": "Legendary",
+                    "current_pokemon_spawn.active_until": now + timedelta(hours=1),
+                }
+            },
+        )
+
+    # Total scans for this sponsor (for visitor_count)
+    total_scans = await db.scanevents.count_documents({"sponsor_id": sponsor_oid})
 
     return ScanResponse(
-        stall_name=stall.name,
-        pokemon_name=pokemon_name,
-        pokemon_type=rarity,
-        visitor_count=stall.visitor_count,
+        stall_name=sponsor.get("company_name", "Unknown"),
+        pokemon=PokemonInfo(name=poke["name"], type=poke["type"], rarity=rarity),
+        visitor_count=total_scans,
         is_flash_sale=is_flash_sale,
         points_earned=points_earned,
     )
@@ -169,117 +235,174 @@ async def scan_stall(body: ScanRequest, user_id: int = Depends(get_current_user)
 
 # ──────────────────────── GET /leaderboard ────────────────────────────
 
+
 @router.get("/leaderboard", response_model=list[LeaderboardEntry])
 async def leaderboard(
     filter: str | None = Query(default=None, description="Pass 'friends' to filter"),
-    user_id: int = Depends(get_current_user),
+    x_user_id: str = Header(default=""),
 ):
     """
-    Leaderboard ranked by points.
-    Includes pokemon_count and stalls_visited for comparison.
-    ?filter=friends → only friends + self.
+    Leaderboard ranked by total_points.
+    ?filter=friends → only friends + self (if friend model existed).
+    For now, returns all users sorted by points.
     """
-    if filter == "friends":
-        current_user = USERS.get(user_id)
-        if not current_user:
-            return []
-        friend_ids = set(current_user.friends) | {user_id}
-        pool = [u for uid, u in USERS.items() if uid in friend_ids]
-    else:
-        pool = list(USERS.values())
+    db = get_db()
 
-    pool.sort(key=lambda u: u.points, reverse=True)
-
-    return [
-        LeaderboardEntry(
-            rank=i + 1,
-            user_id=u.id,
-            name=u.name,
-            points=u.points,
-            pokemon_count=len(u.pokemon_dex),
-            stalls_visited=len({p["stall_id"] for p in u.pokemon_dex}),
-        )
-        for i, u in enumerate(pool)
+    pipeline = [
+        {"$sort": {"wallet.total_points": -1}},
+        {"$limit": 50},
+        {
+            "$project": {
+                "name": 1,
+                "wallet": 1,
+                "pokedex": 1,
+            }
+        },
     ]
+
+    cursor = db.users.aggregate(pipeline)
+    users = await cursor.to_list(length=50)
+
+    entries = []
+    for i, u in enumerate(users):
+        entries.append(
+            LeaderboardEntry(
+                rank=i + 1,
+                user_id=str(u["_id"]),
+                name=u.get("name", "Unknown"),
+                points=u.get("wallet", {}).get("total_points", 0),
+                pokemon_count=len(u.get("pokedex", [])),
+                legendaries_caught=u.get("wallet", {}).get("legendaries_caught", 0),
+            )
+        )
+
+    return entries
 
 
 # ──────────────────────── GET /stalls ─────────────────────────────────
 
+
 @router.get("/stalls", response_model=list[StallInfo])
-async def list_stalls(user_id: int = Depends(get_current_user)):
+async def list_stalls():
     """
-    List all stalls with live crowd level, wait time, and legendary availability.
+    List all sponsors with live crowd level and current pokemon spawn.
     Used for the event map view.
     """
+    db = get_db()
+
+    sponsors = await db.sponsors.find().to_list(length=100)
     result = []
-    for stall in STALLS.values():
-        crowd = _crowd_level(stall)
-        result.append(StallInfo(
-            stall_id=stall.id,
-            name=stall.name,
-            is_hiring=stall.is_hiring,
-            visitor_count=stall.visitor_count,
-            crowd_level=crowd,
-            wait_time_minutes=_stall_wait_time(stall),
-            legendary_available=(crowd == "Low"),
-            map_x=stall.map_x,
-            map_y=stall.map_y,
-        ))
+
+    for sp in sponsors:
+        sp_oid = sp["_id"]
+        scan_count = await _recent_scan_count(db, sp_oid)
+
+        if scan_count < 5:
+            crowd_level = "Low"
+        elif scan_count < 20:
+            crowd_level = "Medium"
+        else:
+            crowd_level = "High"
+
+        spawn = sp.get("current_pokemon_spawn", {})
+
+        result.append(
+            StallInfo(
+                stall_id=str(sp_oid),
+                company_name=sp.get("company_name", "Unknown"),
+                category=sp.get("category", ""),
+                map_location=sp.get("map_location", {"x_coord": 0, "y_coord": 0}),
+                current_pokemon_spawn={
+                    "name": spawn.get("name", "Ditto"),
+                    "rarity": spawn.get("rarity", "Normal"),
+                },
+                crowd_level=crowd_level,
+                scan_count_10m=scan_count,
+            )
+        )
+
     return result
 
 
 # ──────────────────────── GET /notifications ──────────────────────────
 
+
 @router.get("/notifications", response_model=list[NotificationItem])
-async def notifications(user_id: int = Depends(get_current_user)):
+async def notifications():
     """
     Return alerts for legendary Pokémon opportunities at low-crowd stalls.
     """
+    db = get_db()
+    sponsors = await db.sponsors.find().to_list(length=100)
+
     alerts: list[NotificationItem] = []
-    for stall in STALLS.values():
-        if _crowd_level(stall) == "Low":
-            alerts.append(NotificationItem(
-                stall_id=stall.id,
-                stall_name=stall.name,
-                message=f"🔥 Legendary Pokémon spotted at {stall.name}! Low crowd – head there now!",
-                type="legendary_alert",
-            ))
+    for sp in sponsors:
+        scan_count = await _recent_scan_count(db, sp["_id"])
+        if scan_count < LOW_TRAFFIC_THRESHOLD:
+            alerts.append(
+                NotificationItem(
+                    stall_id=str(sp["_id"]),
+                    stall_name=sp.get("company_name", "Unknown"),
+                    message=f"🔥 Legendary Pokémon spotted at {sp.get('company_name')}! Low crowd – head there now!",
+                    type="legendary_alert",
+                )
+            )
+
     if not alerts:
-        alerts.append(NotificationItem(
-            stall_id=0,
-            stall_name="EventFlow",
-            message="🎉 All stalls are buzzing! Keep scanning to earn more points.",
-            type="info",
-        ))
+        alerts.append(
+            NotificationItem(
+                stall_id="",
+                stall_name="EventFlow",
+                message="🎉 All stalls are buzzing! Keep scanning to earn more points.",
+                type="info",
+            )
+        )
+
     return alerts
 
 
 # ──────────────────────── WS /heatmap ─────────────────────────────────
 
+
 @router.websocket("/heatmap")
 async def heatmap(websocket: WebSocket):
-    """Broadcast live crowd heatmap + wait times for each stall every 3s."""
+    """Broadcast live crowd heatmap data for each sponsor every 30s."""
     await websocket.accept()
     try:
         while True:
+            db = get_db()
+            sponsors = await db.sponsors.find().to_list(length=100)
+
             data = []
-            for stall in STALLS.values():
-                crowd = _crowd_level(stall)
-                data.append({
-                    "stall_id": stall.id,
-                    "stall_name": stall.name,
-                    "visitor_count": stall.visitor_count,
-                    "intensity": random.randint(1, 100),
-                    "crowd_level": crowd,
-                    "wait_time_minutes": _stall_wait_time(stall),
-                    "legendary_available": crowd == "Low",
-                    "map_x": stall.map_x,
-                    "map_y": stall.map_y,
-                })
-            await websocket.send_json({
-                "heatmap": data,
-                "timestamp": str(datetime.now()),
-            })
-            await asyncio.sleep(3)
+            for sp in sponsors:
+                scan_count = await _recent_scan_count(db, sp["_id"], minutes=30)
+                loc = sp.get("map_location", {})
+
+                if scan_count < 5:
+                    crowd = "Low"
+                elif scan_count < 20:
+                    crowd = "Medium"
+                else:
+                    crowd = "High"
+
+                data.append(
+                    {
+                        "stall_id": str(sp["_id"]),
+                        "stall_name": sp.get("company_name", ""),
+                        "x": loc.get("x_coord", 0),
+                        "y": loc.get("y_coord", 0),
+                        "scan_count": scan_count,
+                        "crowd_level": crowd,
+                        "legendary_available": crowd == "Low",
+                    }
+                )
+
+            await websocket.send_json(
+                {
+                    "heatmap": data,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            await asyncio.sleep(30)
     except WebSocketDisconnect:
         pass

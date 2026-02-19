@@ -1,22 +1,24 @@
 """
-EventFlow – FastAPI Mock Backend
+EventFlow – FastAPI Backend
 Entry point. Run with: cd backend && python3 -m uvicorn main:app --reload
 """
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from database import lifespan
 from routers import general, game, sponsor, store
 
 # ──────────────────────────── App ──────────────────────────────────────
 
 app = FastAPI(
-    title="EventFlow Mock API",
+    title="EventFlow API",
     description=(
-        "Pokémon-themed event management platform. "
-        "Mock backend with in-memory storage for frontend development."
+        "Pokémon-themed event engagement platform. "
+        "Production backend powered by MongoDB Atlas via async Motor."
     ),
-    version="0.2.0",
+    version="1.0.0",
+    lifespan=lifespan,
 )
 
 # ──────────────────────────── CORS ─────────────────────────────────────
@@ -45,13 +47,23 @@ async def root():
         "app": "EventFlow",
         "theme": "Pokémon",
         "status": "running",
+        "database": "MongoDB Atlas (async Motor)",
         "docs": "/docs",
-        "version": "0.2.0",
+        "version": "1.0.0",
         "endpoints": {
             "homepage": "/api/general/stats",
-            "game": ["/api/game/my-history", "/api/game/scan", "/api/game/leaderboard", "/api/game/stalls", "/api/game/notifications"],
-            "heatmap_ws": "ws://localhost:8001/api/game/heatmap",
-            "sponsor": ["/api/sponsor/scan-candidate", "/api/sponsor/analytics/{stall_id}"],
+            "game": [
+                "/api/game/my-history",
+                "/api/game/scan",
+                "/api/game/leaderboard",
+                "/api/game/stalls",
+                "/api/game/notifications",
+            ],
+            "heatmap_ws": "ws://localhost:8000/api/game/heatmap",
+            "sponsor": [
+                "/api/sponsor/scan-candidate",
+                "/api/sponsor/analytics/{stall_id}",
+            ],
             "store": ["/api/store/rewards", "/api/store/redeem"],
         },
     }

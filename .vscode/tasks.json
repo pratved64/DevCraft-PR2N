@@ -1,0 +1,28 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Start Frontend (Next.js)",
+			"type": "shell",
+			"command": "cd devcraft && npm run dev",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Backend (FastAPI)",
+			"type": "shell",
+			"command": "cd backend && python3 -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload",
+			"group": "build",
+			"isBackground": true,
+			"problemMatcher": []
+		},
+		{
+			"label": "Start Full Stack",
+			"dependsOn": ["Start Backend (FastAPI)", "Start Frontend (Next.js)"],
+			"group": "build",
+			"dependsOrder": "parallel",
+			"problemMatcher": []
+		}
+	]
+}
