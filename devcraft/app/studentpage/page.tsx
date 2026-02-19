@@ -1,8 +1,10 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { Scan, Map, Trophy, Wifi, Battery, AlertTriangle, Sparkles, Navigation, X, ArrowRight, Building2, Users, SignalHigh, HelpCircle, Utensils, Monitor, Briefcase, Music, Camera } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { useRouter } from 'next/navigation'; // <-- Import useRouter
+import { Scan, Map, Trophy, Wifi, Battery, AlertTriangle, Sparkles, Navigation, X, ArrowRight, Building2, Users, SignalHigh, HelpCircle, Utensils, Monitor, Briefcase, Music, Camera, Gift } from 'lucide-react'; // <-- Added Gift icon
 import { Scanner } from '@yudiel/react-qr-scanner';
+import { fetchStalls, fetchLeaderboard, fetchNotifications, scanStall, fetchMyHistory, type StallInfo, type LeaderboardEntry, type NotificationItem } from '../../lib/api';
 
 // --- PIXEL ART STYLES ---
 const styles = `
@@ -106,6 +108,22 @@ const styles = `
   .slide-up { animation: slideUp 0.3s ease-out; }
   @keyframes slideUp { from { transform: translateY(100%); } to { transform: translateY(0); } }
 
+  @keyframes scan {
+    0%, 100% { top: 10%; }
+    50% { top: 90%; }
+  }
+  @keyframes marquee {
+    from { transform: translateX(100vw); }
+    to   { transform: translateX(-100%); }
+  }
+  /* zoom-in for scan result modal */
+  @keyframes zoomIn {
+    from { transform: scale(0.85); opacity: 0; }
+    to   { transform: scale(1);    opacity: 1; }
+  }
+  .animate-in { animation-fill-mode: both; animation-duration: 300ms; }
+  .zoom-in    { animation-name: zoomIn; }
+  .duration-300 { animation-duration: 300ms; }
   .sprite { image-rendering: pixelated; }
   .silhouette { filter: brightness(0) opacity(0.7); }
   
@@ -121,8 +139,8 @@ const styles = `
   }
 `;
 
-// --- EXPANDED SPONSOR DATA ---
-const SPONSORS = [
+// --- EXPANDED SPONSOR DATA (FALLBACK) ---
+const MOCK_SPONSORS = [
   // ZONE A: TECH (Top Left)
   { _id: 'sp_1', company_name: 'TechCorp', category: 'Software', map_location: { x: 15, y: 15 }, current_pokemon_spawn: { name: 'Mewtwo', rarity: 'Legendary' } },
   { _id: 'sp_2', company_name: 'CyberSys', category: 'Hardware', map_location: { x: 35, y: 15 }, current_pokemon_spawn: { name: 'Magnemite', rarity: 'Normal' } },
@@ -134,11 +152,11 @@ const SPONSORS = [
   { _id: 'sp_6', company_name: 'GradNetwork', category: 'Networking', map_location: { x: 85, y: 30 }, current_pokemon_spawn: { name: 'Eevee', rarity: 'Normal' } },
 
   // ZONE C: FOOD COURT (Bottom Right)
-  { _id: 'sp_7', company_name: 'Burger Town', category: 'F&B', map_location: { x: 70, y: 65 }, current_pokemon_spawn: { name: 'Snorlax', rarity: 'Normal' } }, // High Traffic implicit
+  { _id: 'sp_7', company_name: 'Burger Town', category: 'F&B', map_location: { x: 70, y: 65 }, current_pokemon_spawn: { name: 'Snorlax', rarity: 'Normal' } },
   { _id: 'sp_8', company_name: 'Soda Pop', category: 'F&B', map_location: { x: 90, y: 65 }, current_pokemon_spawn: { name: 'Squirtle', rarity: 'Normal' } },
 
   // ZONE D: MAIN STAGE / CENTER
-  { _id: 'sp_9', company_name: 'Main Stage', category: 'Event', map_location: { x: 50, y: 50 }, current_pokemon_spawn: { name: 'Jigglypuff', rarity: 'Normal' } }, // Critical
+  { _id: 'sp_9', company_name: 'Main Stage', category: 'Event', map_location: { x: 50, y: 50 }, current_pokemon_spawn: { name: 'Jigglypuff', rarity: 'Normal' } },
 
   // ZONE E: LOGISTICS / ENTRY (Bottom Left)
   { _id: 'sp_10', company_name: 'Reg Desk', category: 'Logistics', map_location: { x: 20, y: 70 }, current_pokemon_spawn: { name: 'Rattata', rarity: 'Normal' } },
@@ -154,19 +172,28 @@ const ZONES = [
   { label: 'ZONE D - HALL', top: '60%', left: '10%', width: '40%', height: '25%' },
 ];
 
-const LEADERBOARD = [
+const MOCK_LEADERBOARD = [
   { rank: 1, name: 'RED', score: 9999, sprite: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/6.png' },
   { rank: 2, name: 'ASH', score: 8400, sprite: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/25.png' },
   { rank: 3, name: 'YOU', score: 4500, sprite: 'https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/1.png' },
 ];
 
 export default function StudentDashboard() {
+  const router = useRouter(); // <-- Initialize router
   const [view, setView] = useState<'SCAN' | 'MAP' | 'RANK'>('MAP');
   const [activeSponsor, setActiveSponsor] = useState<any>(null);
   const [scanning, setScanning] = useState(false);
   const [scannedMon, setScannedMon] = useState<any>(null);
   const [booting, setBooting] = useState(true);
+  const [apiLoaded, setApiLoaded] = useState(false);
   const [flashAlert, setFlashAlert] = useState<any>(null);
+
+  // Persist a user id across the session (first user returned from /my-history)
+  const [userId, setUserId] = useState<string>('');
+
+  // Live data from API (with mock fallback)
+  const [sponsors, setSponsors] = useState<any[]>(MOCK_SPONSORS);
+  const [leaderboard, setLeaderboard] = useState<any[]>(MOCK_LEADERBOARD);
 
   // Player enters from bottom
   const userPos = { x: 50, y: 95 };
@@ -174,45 +201,109 @@ export default function StudentDashboard() {
   useEffect(() => {
     setTimeout(() => setBooting(false), 1500);
 
-    // Simulate Flash Event (Crowd Control)
-    setTimeout(() => {
-      setFlashAlert({
-        stall: "TechCorp",
-        rarity: "LEGENDARY",
-      });
-    }, 5000);
+    // Fetch live data from backend
+    fetchStalls()
+      .then((stalls) => {
+        const mapped = stalls.map((s) => ({
+          _id: s.stall_id,
+          company_name: s.company_name,
+          category: s.category,
+          map_location: {
+            x: Math.min(95, Math.max(5, (s.map_location.x_coord / 900) * 100)),
+            y: Math.min(95, Math.max(5, (s.map_location.y_coord / 900) * 100)),
+          },
+          current_pokemon_spawn: s.current_pokemon_spawn,
+          crowd_level: s.crowd_level,
+        }));
+        if (mapped.length > 0) {
+          setSponsors(mapped);
+          setApiLoaded(true);
+        }
+      })
+      .catch(console.error);
+
+    // Resolve user id for this session (grab the first user from history)
+    fetchMyHistory()
+      .then((data) => { if (data.user_id) setUserId(data.user_id); })
+      .catch(console.error);
+
+    fetchLeaderboard()
+      .then((lb) => {
+        const mapped = lb.slice(0, 10).map((e, i) => ({
+          rank: e.rank,
+          name: e.name.split(' ')[0].toUpperCase().slice(0, 8),
+          score: e.points,
+          sprite: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${(i + 1) * 6}.png`,
+        }));
+        if (mapped.length > 0) setLeaderboard(mapped);
+      })
+      .catch(console.error);
+
+    // Fetch notifications for flash events
+    fetchNotifications()
+      .then((notifs) => {
+        const legendaryAlert = notifs.find((n) => n.type === 'legendary_alert');
+        if (legendaryAlert) {
+          setTimeout(() => {
+            setFlashAlert({
+              stall: legendaryAlert.stall_name,
+              rarity: 'LEGENDARY',
+            });
+          }, 3000);
+        }
+      })
+      .catch(console.error);
   }, []);
 
-  const handleScanResult = (text: string) => {
+  const handleScanResult = async (text: string) => {
     if (scannedMon) return; // Prevent double scans
 
     console.log("Scanned:", text);
     setScanning(false);
 
+    // We assume the scanned text is the Stall ID
+    // If not, we try to parse it (legacy support)
+    let stallId = text;
     try {
-      // Try to parse as JSON
-      const data = JSON.parse(text);
-      if (data.name && data.points) {
-        setScannedMon({
-          name: data.name,
-          stall: data.stall || "Unknown",
-          points: data.points,
-          img: data.img || `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${Math.floor(Math.random() * 151) + 1}.png`
-        });
-        return;
-      }
-    } catch (e) {
-      // Not JSON, fall through to random encounter
-    }
+      const json = JSON.parse(text);
+      if (json.stall_id) stallId = json.stall_id;
+      else if (json.id) stallId = json.id;
+    } catch { }
 
-    // Fallback: Random Encounter for ANY QR code
-    const randomId = Math.floor(Math.random() * 151) + 1;
-    setScannedMon({
-      name: "MYSTERY SIGNAL",
-      stall: "Sector 7",
-      points: 500,
-      img: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${randomId}.png`
-    });
+    try {
+      const result = await scanStall(stallId, userId || undefined);
+
+      // Map pokemon number from name for sprite URL
+      const POKEMON_NAME_TO_ID: Record<string, number> = {
+        Pikachu: 25, Bulbasaur: 1, Squirtle: 7, Charmander: 4, Eevee: 133,
+        Snorlax: 143, Jigglypuff: 39, Psyduck: 54, Magikarp: 129, Rattata: 19,
+        Mewtwo: 150, Rayquaza: 384, Charizard: 6, Dragonite: 149, Gengar: 94,
+        Articuno: 144, Zapdos: 145, Moltres: 146, Lugia: 249, 'Ho-Oh': 250,
+      };
+      const spriteId = POKEMON_NAME_TO_ID[result.pokemon.name] ?? Math.floor(Math.random() * 150) + 1;
+
+      setScannedMon({
+        name: result.pokemon.name.toUpperCase(),
+        stall: result.stall_name,
+        points: result.points_earned,
+        rarity: result.pokemon.rarity,
+        isLegendary: result.pokemon.rarity === 'Legendary',
+        isFlashSale: result.is_flash_sale,
+        img: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/other/showdown/${spriteId}.gif`,
+      });
+    } catch (e) {
+      console.error("Scan failed", e);
+      // Fallback/Simulate for demo purposes if API fails
+      const randomId = Math.floor(Math.random() * 151) + 1;
+      setScannedMon({
+        name: "MYSTERY SIGNAL",
+        stall: "Unknown Sector",
+        points: 50,
+        rarity: "Normal",
+        isLegendary: false,
+        img: `https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${randomId}.png`
+      });
+    }
   };
 
   const handleError = (error: any) => {
@@ -223,8 +314,9 @@ export default function StudentDashboard() {
   const getStatus = (sponsor: any) => {
     if (!sponsor) return 'NORMAL';
     if (sponsor.current_pokemon_spawn?.rarity === 'Legendary') return 'RECOMMENDED';
-    // Simulation: Main Stage and Burger Town are crowded
-    if (['Main Stage', 'Burger Town'].includes(sponsor.company_name)) return 'CRITICAL';
+    // Use real crowd_level from API when available
+    if (sponsor.crowd_level === 'High') return 'CRITICAL';
+    if (sponsor.crowd_level === 'Low') return 'RECOMMENDED';
     return 'NORMAL';
   };
 
@@ -274,7 +366,7 @@ export default function StudentDashboard() {
                   {/* STATUS BAR */}
                   <div className="bg-[#0f380f] text-[#9bbc0f] p-1 flex justify-between items-center px-2 z-20 shadow-md">
                     <span className="font-pixel text-[8px] flex items-center gap-1">
-                      <Navigation size={8} /> {SPONSORS.length} STALLS ACTIVE
+                      <Navigation size={8} /> {sponsors.length} STALLS ACTIVE
                     </span>
                     <div className="flex gap-2">
                       <span className="font-console">842 ONLINE</span>
@@ -301,12 +393,12 @@ export default function StudentDashboard() {
                         ))}
 
                         {/* Layer 3: Dynamic Path */}
-                        {(activeSponsor || SPONSORS.find(s => s.current_pokemon_spawn.rarity === 'Legendary')) && (
+                        {(activeSponsor || sponsors.find(s => s.current_pokemon_spawn.rarity === 'Legendary')) && (
                           <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
                             <line
                               x1={`${userPos.x}%`} y1={`${userPos.y}%`}
-                              x2={`${activeSponsor?.map_location.x || SPONSORS.find(s => s.current_pokemon_spawn.rarity === 'Legendary')?.map_location.x}%`}
-                              y2={`${activeSponsor?.map_location.y || SPONSORS.find(s => s.current_pokemon_spawn.rarity === 'Legendary')?.map_location.y}%`}
+                              x2={`${activeSponsor?.map_location.x || sponsors.find(s => s.current_pokemon_spawn.rarity === 'Legendary')?.map_location.x}%`}
+                              y2={`${activeSponsor?.map_location.y || sponsors.find(s => s.current_pokemon_spawn.rarity === 'Legendary')?.map_location.y}%`}
                               stroke={getStatus(activeSponsor) === 'CRITICAL' ? '#d32f2f' : '#0f380f'}
                               strokeWidth="2"
                               strokeDasharray="4"
@@ -322,7 +414,7 @@ export default function StudentDashboard() {
                         </div>
 
                         {/* Layer 5: Sponsors Pins */}
-                        {SPONSORS.map(sp => {
+                        {sponsors.map(sp => {
                           const status = getStatus(sp);
                           const isActive = activeSponsor?._id === sp._id;
                           return (
@@ -478,7 +570,7 @@ export default function StudentDashboard() {
                               ? 'bg-[#d32f2f] text-white border-[#8b0000]'
                               : 'bg-[#0f380f] text-[#9bbc0f] border-[#051c05]'
                             }
-                             `}
+                              `}
                         >
                           {scanning ? 'ABORT SCAN' : 'ACTIVATE CAMERA'}
                         </button>
@@ -492,7 +584,7 @@ export default function StudentDashboard() {
                       <div className="text-center font-pixel text-[10px] py-2 border-b-4 border-[#0f380f] mb-2 bg-[#8bac0f]">
                         RIVAL RANKINGS
                       </div>
-                      {LEADERBOARD.map((user, idx) => (
+                      {leaderboard.map((user, idx) => (
                         <div key={user.name} className={`flex items-center gap-3 p-3 border-b-2 border-[#306230] mb-2 ${user.name === 'YOU' ? 'bg-[#0f380f] text-[#9bbc0f] border-l-4 border-l-yellow-500' : 'bg-[#8bac0f]'}`}>
                           <div className="font-pixel text-lg w-8">#{user.rank}</div>
                           <div className="w-10 h-10 border-2 border-[#0f380f] bg-[#9bbc0f] flex items-center justify-center">
@@ -540,7 +632,7 @@ export default function StudentDashboard() {
                       </div>
 
                       <div className="font-pixel text-sm font-bold mb-1">{flashAlert.rarity} SPAWN DETECTED!</div>
-                      <button onClick={() => { setFlashAlert(null); setView('MAP'); setActiveSponsor(SPONSORS.find(s => s.current_pokemon_spawn.rarity === 'Legendary')) }} className="bg-[#0f380f] text-[#9bbc0f] w-full py-3 font-pixel text-[10px] hover:bg-[#306230] mt-2">
+                      <button onClick={() => { setFlashAlert(null); setView('MAP'); setActiveSponsor(sponsors.find(s => s.current_pokemon_spawn.rarity === 'Legendary')) }} className="bg-[#0f380f] text-[#9bbc0f] w-full py-3 font-pixel text-[10px] hover:bg-[#306230] mt-2">
                         ROUTE TO STALL
                       </button>
                     </div>
@@ -549,16 +641,20 @@ export default function StudentDashboard() {
               )}
             </div>
 
-            {/* NAVIGATION BUTTONS */}
+            {/* NAVIGATION BUTTONS (Updated to 4 Buttons) */}
             <div className="flex justify-between mt-4 gap-1">
-              <button onClick={() => setView('SCAN')} className={`flex-1 py-4 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all ${view === 'SCAN' ? 'bg-[#9bbc0f] text-[#0f380f] border-[#0f380f] translate-y-1' : 'bg-[#303030] text-gray-400 border-[#1a1a1a]'}`}>
-                <Scan size={20} />
+              <button onClick={() => setView('SCAN')} className={`flex-1 py-3 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all ${view === 'SCAN' ? 'bg-[#9bbc0f] text-[#0f380f] border-[#0f380f] translate-y-1' : 'bg-[#303030] text-gray-400 border-[#1a1a1a]'}`}>
+                <Scan size={18} /> SCAN
               </button>
-              <button onClick={() => setView('MAP')} className={`flex-1 py-4 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all ${view === 'MAP' ? 'bg-[#9bbc0f] text-[#0f380f] border-[#0f380f] translate-y-1' : 'bg-[#303030] text-gray-400 border-[#1a1a1a]'}`}>
-                <Map size={20} />
+              <button onClick={() => setView('MAP')} className={`flex-1 py-3 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all ${view === 'MAP' ? 'bg-[#9bbc0f] text-[#0f380f] border-[#0f380f] translate-y-1' : 'bg-[#303030] text-gray-400 border-[#1a1a1a]'}`}>
+                <Map size={18} /> MAP
               </button>
-              <button onClick={() => setView('RANK')} className={`flex-1 py-4 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all ${view === 'RANK' ? 'bg-[#9bbc0f] text-[#0f380f] border-[#0f380f] translate-y-1' : 'bg-[#303030] text-gray-400 border-[#1a1a1a]'}`}>
-                <Trophy size={20} />
+              <button onClick={() => setView('RANK')} className={`flex-1 py-3 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all ${view === 'RANK' ? 'bg-[#9bbc0f] text-[#0f380f] border-[#0f380f] translate-y-1' : 'bg-[#303030] text-gray-400 border-[#1a1a1a]'}`}>
+                <Trophy size={18} /> RANK
+              </button>
+              {/* NEW REDEEM BUTTON */}
+              <button onClick={() => router.push('/redeem')} className={`flex-1 py-3 border-b-4 rounded-lg font-pixel text-[8px] flex flex-col items-center gap-1 transition-all bg-[#303030] text-gray-400 border-[#1a1a1a] hover:text-[#9bbc0f]`}>
+                <Gift size={18} /> REDEEM
               </button>
             </div>
 
@@ -576,18 +672,26 @@ export default function StudentDashboard() {
       {scannedMon && (
         <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-black/90 backdrop-blur-sm animate-in zoom-in duration-300">
           <div className="bg-[#f8f8f8] border-[6px] border-[#0f380f] rounded-lg w-full max-w-sm overflow-hidden shadow-2xl">
-            <div className="bg-[#0f380f] text-[#9bbc0f] p-2 font-pixel text-[10px] text-center flex justify-between items-center">
-              <span>ENCOUNTER!</span>
+            <div className={`${scannedMon.isLegendary ? 'bg-yellow-600' : 'bg-[#0f380f]'} text-[#9bbc0f] p-2 font-pixel text-[10px] text-center flex justify-between items-center`}>
+              <span>{scannedMon.isLegendary ? '✨ LEGENDARY ENCOUNTER!' : 'ENCOUNTER!'}</span>
               <X size={14} onClick={() => setScannedMon(null)} />
             </div>
             <div className="bg-[#9bbc0f] p-6 flex flex-col items-center relative h-64 border-b-4 border-[#0f380f]">
               <div className="scanlines opacity-50"></div>
+              {scannedMon.isLegendary && (
+                <div className="absolute inset-0 bg-yellow-400/10 animate-pulse pointer-events-none"></div>
+              )}
               <div className="flex-1 flex items-center justify-center">
                 <img src={scannedMon.img} className="w-32 h-32 sprite animate-bounce" />
               </div>
             </div>
             <div className="p-4 bg-white font-pixel text-[10px] leading-relaxed">
-              <p className="mb-4">Gotcha! <span className="font-bold">{scannedMon.name}</span> was caught!</p>
+              <p className="mb-1">Gotcha! <span className="font-bold">{scannedMon.name}</span> was caught!</p>
+              <p className="mb-1 text-[#306230]">At: {scannedMon.stall}</p>
+              {scannedMon.isFlashSale && (
+                <p className="mb-1 text-red-600 blink">⚡ FLASH SALE BONUS!</p>
+              )}
+              <p className="font-bold text-[#0f380f]">+{scannedMon.points} PTS</p>
               <button onClick={() => setScannedMon(null)} className="mt-4 w-full bg-[#0f380f] text-[#9bbc0f] py-3 hover:bg-[#306230] animate-pulse">CONTINUE ➤</button>
             </div>
           </div>

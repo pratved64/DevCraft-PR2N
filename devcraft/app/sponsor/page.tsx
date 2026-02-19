@@ -2,10 +2,11 @@
 
 import React, { useState, useEffect } from 'react';
 import {
-  Users, Clock, Activity, 
-  RefreshCw, Terminal, Cpu, 
-  Share2, MapPin, Wifi, Crosshair
+  Users, Clock, Activity,
+  RefreshCw, Terminal, Cpu,
+  Share2, Wifi, Crosshair
 } from 'lucide-react';
+import { fetchSponsorAnalytics, fetchStalls, type AnalyticsResponse, type StallInfo } from '../../lib/api';
 
 // --- PIXEL ART STYLES ---
 const styles = `
@@ -54,6 +55,14 @@ const styles = `
     position: relative;
     transition: all 0.2s;
   }
+
+  @keyframes fadeInUp {
+    from { opacity: 0; transform: translateY(16px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+  .animate-fade-in {
+    animation: fadeInUp 0.6s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+  }
   
   .pixel-card:hover {
     border-color: #666;
@@ -70,12 +79,11 @@ const styles = `
 
   .building-block {
     position: absolute;
-    background-color: #1a1a1a;
-    box-shadow: 4px 4px 0px #0a0a0a; 
     border: 1px solid #333;
     display: flex;
     align-items: center;
     justify-content: center;
+    background: rgba(255, 255, 255, 0.02);
   }
 
   /* HEAT LEVELS */
@@ -94,17 +102,22 @@ const styles = `
   @keyframes blink { 50% { opacity: 0; } }
 
   .retro-bar-cyan { background: repeating-linear-gradient(45deg, #0e7490, #0e7490 2px, #22d3ee 2px, #22d3ee 4px); }
+  
+  .pixel-btn {
+    background: #111;
+    border: 2px solid #333;
+    color: #ccc;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .pixel-btn:hover {
+    border-color: #22d3ee;
+    color: #fff;
+    box-shadow: 0 0 10px rgba(34,211,238,0.2);
+  }
 `;
 
-// --- MOCK DATA ---
-const SPONSOR_DATA = {
-  name: "TechCorp",
-  id: "SPON-882-X",
-  loc: { x: 25, y: 25 }, // Hardcoded to match Zone A center
-  location: "ZONE_A"
-};
-
-// Map Buildings (Zones)
+// Map Buildings (Zones) - Visual Layout
 const BUILDINGS = [
   { id: 'Z_A', top: '10%', left: '10%', width: '30%', height: '30%', label: 'ZONE A' },
   { id: 'Z_B', top: '10%', left: '60%', width: '30%', height: '30%', label: 'ZONE B' },
@@ -113,24 +126,12 @@ const BUILDINGS = [
   { id: 'Z_STAGE', top: '40%', left: '40%', width: '20%', height: '20%', label: 'STAGE' },
 ];
 
-// Stalls mapped EXACTLY to the centers of the BUILDINGS above
-const STALLS = [
-  { id: 'S1', name: 'TECHCORP (YOU)', traffic: 'LOW', x: 25, y: 25, isSelf: true }, // Center of Z_A
-  { id: 'S2', name: 'FOOD COURT', traffic: 'HIGH', x: 75, y: 25, shared_audience: 65 }, // Center of Z_B
-  { id: 'S3', name: 'MERCH SHOP', traffic: 'MED', x: 75, y: 75, shared_audience: 45 }, // Center of Z_C
-  { id: 'S4', name: 'AI LABS', traffic: 'LOW', x: 25, y: 75, shared_audience: 78 }, // Center of Z_D
-  { id: 'S5', name: 'MAIN STAGE', traffic: 'CRITICAL', x: 50, y: 50, shared_audience: 92 }, // Center of STAGE
-];
-
 const LIVE_LOGS = [
   { time: "14:32:05", msg: "USER_882 SCANNED QR AT TECHCORP", type: "SCAN", color: "text-cyan-400" },
   { time: "14:31:45", msg: "USER_104 REDEEMED 'TECHCORP STICKER'", type: "REDEEM", color: "text-purple-400" },
   { time: "14:30:12", msg: "VENUE_ALERT: MAIN STAGE CROWD SPIKE > 90%", type: "ALERT", color: "text-red-500 blink" },
   { time: "14:28:55", msg: "USER_993 SCANNED QR AT TECHCORP", type: "SCAN", color: "text-cyan-400" },
   { time: "14:25:20", msg: "INVENTORY DB SYNC COMPLETE", type: "SYS", color: "text-gray-400" },
-  { time: "14:24:10", msg: "GLOBAL_STAT: CROSS-POLLINATION +12%", type: "SYS", color: "text-emerald-500" },
-  { time: "14:22:00", msg: "USER_552 EXITED VENUE", type: "SYS", color: "text-gray-600" },
-  { time: "14:20:15", msg: "USER_112 SCANNED QR AT TECHCORP", type: "SCAN", color: "text-cyan-400" },
 ];
 
 // --- SUB-COMPONENTS ---
@@ -143,21 +144,68 @@ const KPICard = ({ label, value, sub, icon: Icon, colorClass }: any) => (
     </div>
     <div>
       <div className="text-2xl font-console text-white tracking-widest">{value}</div>
-      {sub && <div className={`text-[10px] font-console mt-1 uppercase ${colorClass.replace('border-', 'text-')}`}>{sub}</div>}
+      {sub && <div className={`text-[10px] font-console mt-1 uppercase text-gray-400`}>{sub}</div>}
     </div>
   </div>
 );
 
 // --- MAIN PAGE COMPONENT ---
 
-export default function SingleSponsorPage() {
+export default function SponsorPage() {
   const [booting, setBooting] = useState(true);
-  const [selectedStall, setSelectedStall] = useState<any>(null);
+  const [loading, setLoading] = useState(false);
+
+  // Data State
+  const [stalls, setStalls] = useState<StallInfo[]>([]);
+  const [selectedStall, setSelectedStall] = useState<SpreadStall | null>(null);
+  const [analytics, setAnalytics] = useState<AnalyticsResponse | null>(null);
+
+  // Derived Type for UI mapping
+  interface SpreadStall extends StallInfo {
+    x: number;
+    y: number;
+    traffic: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
+  }
 
   useEffect(() => {
+    // 1. Boot Sequence
     const timer = setTimeout(() => setBooting(false), 1200);
+
+    // 2. Fetch Stalls
+    fetchStalls().then(data => {
+      setStalls(data);
+      if (data.length > 0) {
+        // Select first one by default for the dashboard view
+        handleSelectStall(data[0].stall_id, data);
+      }
+    }).catch(console.error);
+
     return () => clearTimeout(timer);
   }, []);
+
+  const handleSelectStall = (id: string, allStalls: StallInfo[] = stalls) => {
+    setLoading(true);
+    const stall = allStalls.find(s => s.stall_id === id);
+
+    fetchSponsorAnalytics(id).then(data => {
+      setAnalytics(data);
+      setLoading(false);
+
+      if (stall) {
+        // Map stall to visual properties
+        const mapped: SpreadStall = {
+          ...stall,
+          x: Math.min(90, Math.max(10, (stall.map_location.x_coord / 900) * 100)),
+          y: Math.min(90, Math.max(10, (stall.map_location.y_coord / 900) * 100)),
+          traffic: stall.crowd_level === 'High' ? 'CRITICAL' : stall.crowd_level === 'Medium' ? 'MED' : 'LOW'
+        };
+        setSelectedStall(mapped);
+      }
+    }).catch(err => {
+      console.error(err);
+      setLoading(false);
+    });
+  };
 
   const getHeatClass = (traffic: string) => {
     if (traffic === 'CRITICAL') return 'heat-critical';
@@ -178,18 +226,29 @@ export default function SingleSponsorPage() {
               <Terminal className="text-cyan-400" size={24} />
             </div>
             <div>
-              <h1 className="font-pixel text-sm text-white uppercase">{SPONSOR_DATA.name} <span className="text-cyan-500">TERMINAL</span></h1>
+              <h1 className="font-pixel text-sm text-white uppercase">
+                {selectedStall ? selectedStall.company_name : 'SPONSOR'} <span className="text-cyan-500">TERMINAL</span>
+              </h1>
               <div className="flex gap-4 mt-1 font-console text-xs text-gray-400">
-                <span>ID: {SPONSOR_DATA.id}</span>
-                <span>ZONE: {SPONSOR_DATA.location}</span>
+                <span>ID: {selectedStall?.stall_id || '---'}</span>
+                <span>ZONE: {selectedStall?.category || '---'}</span>
                 <span className="text-emerald-500 animate-pulse">● LIVE UPLINK</span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-4">
-            <button className="pixel-btn px-4 py-2 font-pixel text-[10px] flex items-center gap-2 hover:border-cyan-500">
-              <RefreshCw size={12} /> REFRESH_DATA
+            {stalls.length > 0 && (
+              <select
+                className="bg-[#111] text-gray-300 font-console text-xs border border-[#333] p-2 focus:border-cyan-500 outline-none"
+                value={selectedStall?.stall_id || ''}
+                onChange={(e) => handleSelectStall(e.target.value)}
+              >
+                {stalls.map(s => <option key={s.stall_id} value={s.stall_id}>{s.company_name}</option>)}
+              </select>
+            )}
+            <button className="pixel-btn px-4 py-2 font-pixel text-[10px] flex items-center gap-2 hover:border-cyan-500" onClick={() => selectedStall && handleSelectStall(selectedStall.stall_id)}>
+              <RefreshCw size={12} /> REFRESH
             </button>
           </div>
         </div>
@@ -197,7 +256,7 @@ export default function SingleSponsorPage() {
 
       {/* --- MAIN CONTENT --- */}
       <main className="max-w-7xl mx-auto px-6 pt-8 pb-20 relative z-10">
-        
+
         {booting ? (
           <div className="h-[60vh] flex flex-col items-center justify-center font-pixel text-cyan-500 animate-pulse">
             <Cpu size={64} className="mb-4" />
@@ -208,32 +267,32 @@ export default function SingleSponsorPage() {
           <>
             {/* 1. KPI METRICS */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <KPICard 
-                label="YOUR_VISITORS" 
-                value="1,240" 
-                sub="+12% VS AVG" 
-                icon={Users} 
+              <KPICard
+                label="TOTAL_VISITORS"
+                value={analytics?.total_footfall.toLocaleString() || '---'}
+                sub={analytics?.peak_traffic_hour ? `PEAK: ${analytics.peak_traffic_hour}:00` : '---'}
+                icon={Users}
                 colorClass="border-l-cyan-500"
               />
-              <KPICard 
-                label="AVG_DWELL_TIME" 
-                value="12m 30s" 
-                sub="OPTIMAL FLOW" 
-                icon={Clock} 
+              <KPICard
+                label="AVG_DWELL_TIME"
+                value={analytics?.avg_wait_time || '---'}
+                sub="OPTIMAL FLOW"
+                icon={Clock}
                 colorClass="border-l-emerald-500"
               />
-              <KPICard 
-                label="CROSS_POLLINATION" 
-                value="68%" 
-                sub="VISITED >2 ZONES" 
-                icon={Share2} 
+              <KPICard
+                label="CROSS_POLLINATION"
+                value={analytics ? `${analytics.cross_pollination.toFixed(1)}%` : '---'}
+                sub="VISITED MULTIPLE ZONES"
+                icon={Share2}
                 colorClass="border-l-purple-500"
               />
-              <KPICard 
-                label="VENUE_STATUS" 
-                value="CRITICAL" 
-                sub="MAIN STAGE PEAKING" 
-                icon={Activity} 
+              <KPICard
+                label="COST_PER_TOUCH"
+                value={analytics ? `$${analytics.cost_per_interaction.toFixed(2)}` : '---'}
+                sub="ROI TARGET MET"
+                icon={Activity}
                 colorClass="border-l-red-500"
               />
             </div>
@@ -242,85 +301,78 @@ export default function SingleSponsorPage() {
 
               {/* 2. LEFT COL: MACRO HEATMAP */}
               <div className="lg:col-span-1 space-y-6">
-                
+
                 <div className="pixel-card h-[450px] flex flex-col">
                   <div className="p-4 border-b border-[#333] flex justify-between items-center bg-[#050505]">
                     <h3 className="font-pixel text-[10px] text-cyan-400">MACRO_HEATMAP</h3>
                     <Wifi size={12} className="text-emerald-500 animate-pulse" />
                   </div>
-                  
+
                   {/* Map Visualizer */}
-                  <div className="flex-1 relative bg-[#0a0a0a] overflow-hidden cursor-crosshair" onClick={() => setSelectedStall(null)}>
-                     <div className="absolute inset-0 map-grid"></div>
+                  <div className="flex-1 relative bg-[#0a0a0a] overflow-hidden">
+                    <div className="absolute inset-0 map-grid"></div>
 
-                     {/* Architectural Blocks */}
-                     {BUILDINGS.map((b) => (
-                       <div key={b.id} className="building-block" style={{ top: b.top, left: b.left, width: b.width, height: b.height }}>
-                          <span className="font-pixel text-[8px] text-[#333] opacity-50">{b.label}</span>
-                       </div>
-                     ))}
+                    {/* Architectural Blocks */}
+                    {BUILDINGS.map((b) => (
+                      <div key={b.id} className="building-block" style={{ top: b.top, left: b.left, width: b.width, height: b.height }}>
+                        <span className="font-pixel text-[8px] text-[#333] opacity-50">{b.label}</span>
+                      </div>
+                    ))}
 
-                     {/* Dynamic Connection Line */}
-                     {selectedStall && !selectedStall.isSelf && (
-                        <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
-                          <line 
-                            x1={`${SPONSOR_DATA.loc.x}%`} y1={`${SPONSOR_DATA.loc.y}%`} 
-                            x2={`${selectedStall.x}%`} y2={`${selectedStall.y}%`} 
-                            stroke="#a855f7" 
-                            strokeWidth="2" 
-                            className="path-line"
-                          />
-                        </svg>
-                     )}
+                    {/* Stalls / Nodes */}
+                    {stalls.map(stall => {
+                      const x = Math.min(90, Math.max(10, (stall.map_location.x_coord / 900) * 100));
+                      const y = Math.min(90, Math.max(10, (stall.map_location.y_coord / 900) * 100));
+                      const isSelected = selectedStall?.stall_id === stall.stall_id;
 
-                     {/* Stalls / Nodes */}
-                     {STALLS.map(stall => (
-                       <div 
-                         key={stall.id}
-                         onClick={(e) => { e.stopPropagation(); setSelectedStall(stall); }}
-                         className="absolute flex flex-col items-center z-20 group"
-                         style={{ left: `${stall.x}%`, top: `${stall.y}%`, transform: 'translate(-50%, -50%)' }}
-                       >
+                      return (
+                        <div
+                          key={stall.stall_id}
+                          className="absolute flex flex-col items-center z-20 group"
+                          style={{ left: `${x}%`, top: `${y}%`, transform: 'translate(-50%, -50%)' }}
+                        >
                           {/* Pulsing Aura */}
-                          <div className={`absolute w-8 h-8 rounded-full opacity-30 animate-pulse ${getHeatClass(stall.traffic)}`}></div>
+                          <div className={`absolute w-8 h-8 rounded-full opacity-30 animate-pulse ${stall.crowd_level === 'High' ? 'heat-critical' : 'heat-low'}`}></div>
 
                           {/* Pin / Node */}
                           <div className={`
-                             w-4 h-4 border-2 flex items-center justify-center transition-all
-                             ${stall.isSelf ? 'border-cyan-400 bg-[#111] z-30' : 'border-[#444] bg-[#222] hover:bg-[#444]'}
-                             ${selectedStall?.id === stall.id ? 'scale-150 ring-2 ring-purple-500' : ''}
-                          `}>
-                             {stall.isSelf && <Crosshair size={8} className="text-cyan-400" />}
+                                 w-4 h-4 border-2 flex items-center justify-center transition-all
+                                 ${isSelected ? 'border-cyan-400 bg-[#111] z-30 scale-125' : 'border-[#444] bg-[#222]'}
+                              `}>
+                            {isSelected && <Crosshair size={8} className="text-cyan-400" />}
                           </div>
-                          
+
                           {/* Label */}
-                          <div className={`mt-2 px-1 font-pixel text-[6px] whitespace-nowrap bg-black/80 border ${stall.isSelf ? 'text-cyan-400 border-cyan-500/50' : 'text-gray-400 border-[#333]'}`}>
-                            {stall.name}
-                          </div>
-                       </div>
-                     ))}
+                          {isSelected && (
+                            <div className={`mt-2 px-1 font-pixel text-[6px] whitespace-nowrap bg-black/80 border text-cyan-400 border-cyan-500/50`}>
+                              {stall.company_name}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
 
                   {/* Info Panel Bottom */}
                   <div className="h-24 bg-[#050505] border-t border-[#333] p-3 relative shadow-inner">
-                     {selectedStall ? (
-                       <div className="flex h-full gap-4">
-                          <div className="flex-1">
-                             <div className="font-pixel text-[8px] text-gray-400 mb-1">TARGET: <span className="text-white">{selectedStall.name}</span></div>
-                             <div className="font-console text-xs text-gray-500">TRAFFIC: <span className={selectedStall.traffic === 'CRITICAL' ? 'text-red-500' : 'text-yellow-500'}>{selectedStall.traffic}</span></div>
+                    {selectedStall ? (
+                      <div className="flex h-full gap-4">
+                        <div className="flex-1">
+                          <div className="font-pixel text-[8px] text-gray-400 mb-1">TARGET: <span className="text-white">{selectedStall.company_name}</span></div>
+                          <div className="font-console text-xs text-gray-500">Network: <span className="text-white">{selectedStall.category}</span></div>
+                        </div>
+                        <div className="w-24 border-l border-[#333] pl-3 flex flex-col justify-center">
+                          <div className="font-pixel text-[6px] text-purple-400 mb-1">RETENTION</div>
+                          <div className="text-xl font-console text-white">
+                            {analytics?.flash_sale_lift ? `+${analytics.flash_sale_lift}%` : '---'}
                           </div>
-                          {!selectedStall.isSelf && (
-                            <div className="w-24 border-l border-[#333] pl-3 flex flex-col justify-center">
-                               <div className="font-pixel text-[6px] text-purple-400 mb-1">SHARED AUDIENCE</div>
-                               <div className="text-xl font-console text-white">{selectedStall.shared_audience}%</div>
-                            </div>
-                          )}
-                       </div>
-                     ) : (
-                       <div className="h-full flex items-center justify-center font-pixel text-[8px] text-gray-600 opacity-50">
-                          SELECT NODE FOR INTEL
-                       </div>
-                     )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="h-full flex items-center justify-center font-pixel text-[8px] text-gray-600 opacity-50">
+                        SELECT NODE FOR INTEL
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -328,7 +380,7 @@ export default function SingleSponsorPage() {
 
               {/* 3. CENTER/RIGHT COL: ANALYTICS & FEED */}
               <div className="lg:col-span-2 flex flex-col gap-6">
-                
+
                 {/* Traffic Graph */}
                 <div className="pixel-card p-6 h-[250px] flex flex-col">
                   <div className="flex justify-between items-start mb-4">
@@ -341,27 +393,23 @@ export default function SingleSponsorPage() {
                     </div>
                   </div>
 
-                  {/* Histogram */}
+                  {/* Histogram using real data would go here, continuing with mock for visual style */}
                   <div className="flex-1 flex items-end gap-1 border-b-2 border-l-2 border-[#333] p-2 bg-[#050505] relative">
-                     <div className="absolute inset-0 opacity-10" style={{backgroundImage: 'linear-gradient(0deg, transparent 24%, #333 25%, #333 26%, transparent 27%, transparent 74%, #333 75%, #333 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, #333 25%, #333 26%, transparent 27%, transparent 74%, #333 75%, #333 76%, transparent 77%, transparent)', backgroundSize: '30px 30px'}}></div>
-                     
-                     {[10, 20, 15, 30, 45, 60, 40, 50, 85, 70, 55, 30, 20, 15].map((h, i) => {
-                        let barColor = "bg-cyan-600";
-                        if (h > 60) barColor = "bg-cyan-400 retro-bar-cyan";
+                    <div className="absolute inset-0 opacity-10" style={{ backgroundImage: 'linear-gradient(0deg, transparent 24%, #333 25%, #333 26%, transparent 27%, transparent 74%, #333 75%, #333 76%, transparent 77%, transparent), linear-gradient(90deg, transparent 24%, #333 25%, #333 26%, transparent 27%, transparent 74%, #333 75%, #333 76%, transparent 77%, transparent)', backgroundSize: '30px 30px' }}></div>
 
-                        return (
-                          <div key={i} className="flex-1 group relative h-full flex items-end">
-                             <div 
-                                className={`w-full hover:brightness-125 transition-all duration-300 ${barColor}`} 
-                                style={{height: `${h}%`}}
-                             ></div>
-                             {/* Hover Value */}
-                             <div className="absolute -top-6 left-1/2 -translate-x-1/2 hidden group-hover:block bg-[#111] border border-cyan-500 px-1 text-[8px] font-pixel text-cyan-400 z-10">
-                                {h}
-                             </div>
-                          </div>
-                        );
-                     })}
+                    {[10, 20, 15, 30, 45, 60, 40, 50, 85, 70, 55, 30, 20, 15].map((h, i) => {
+                      let barColor = "bg-cyan-600";
+                      if (h > 60) barColor = "bg-cyan-400 retro-bar-cyan";
+
+                      return (
+                        <div key={i} className="flex-1 group relative h-full flex items-end">
+                          <div
+                            className={`w-full hover:brightness-125 transition-all duration-300 ${barColor}`}
+                            style={{ height: `${h}%` }}
+                          ></div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
 
@@ -372,30 +420,20 @@ export default function SingleSponsorPage() {
                     <Activity size={10} className="animate-pulse text-cyan-500" />
                   </h3>
                   <div className="flex-1 overflow-y-auto font-console text-xs space-y-2 p-1">
-                      {LIVE_LOGS.map((log, i) => (
-                        <div key={i} className="flex gap-3 border-b border-[#1a1a1a] pb-1 hover:bg-[#111]">
-                            <span className="text-gray-600 w-20">[{log.time}]</span>
-                            <span className={`flex-1 ${log.color}`}>
-                              {log.type === 'SCAN' ? '>>> ' : '--- '} {log.msg}
-                            </span>
-                        </div>
-                      ))}
-                      <div className="text-cyan-500 animate-pulse">_</div>
+                    {LIVE_LOGS.map((log, i) => (
+                      <div key={i} className="flex gap-3 border-b border-[#1a1a1a] pb-1 hover:bg-[#111]">
+                        <span className="text-gray-600 w-20">[{log.time}]</span>
+                        <span className={`flex-1 ${log.color}`}>
+                          {log.type === 'SCAN' ? '>>> ' : '--- '} {log.msg}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="text-cyan-500 animate-pulse">_</div>
                   </div>
                 </div>
 
               </div>
-
             </div>
-
-            {/* Footer */}
-            <footer className="mt-8 border-t-2 border-[#333] pt-4 flex justify-between items-center text-[10px] font-pixel text-gray-500">
-               <div>TERM_ID: {SPONSOR_DATA.id}</div>
-               <div className="flex gap-4">
-                 <span>UPTIME: 04:22:15</span>
-                 <span className="text-emerald-500">ENCRYPTED</span>
-               </div>
-            </footer>
           </>
         )}
 

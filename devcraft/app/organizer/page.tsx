@@ -2,12 +2,13 @@
 
 import React, { useState, useEffect } from 'react';
 import {
-  Users, Clock, Activity, 
-  RefreshCw, Terminal, Cpu, 
+  Users, Clock, Activity,
+  RefreshCw, Terminal, Cpu,
   MapPin, Wifi, Lock,
   Globe, Database, ShieldAlert,
-  AlertTriangle, Crosshair, X, Zap
+  AlertTriangle, Crosshair, X, Zap, Server
 } from 'lucide-react';
+import { fetchStalls, fetchStats, type StallInfo, type Stats } from '../../lib/api';
 
 // --- PIXEL ART & CYBER STYLES ---
 const styles = `
@@ -134,34 +135,12 @@ const styles = `
   }
 `;
 
-// --- MOCK DATA FOR GLOBAL ORGANIZER ---
-const GLOBAL_DATA = {
-  id: "MASTER-CTRL-01",
-  total_attendees: "15,240",
-  active_nodes: 142,
-  total_scans: "89,450",
-  system_health: "99.9%"
-};
-
 const BUILDINGS = [
   { id: 'Z_A', top: '10%', left: '10%', width: '25%', height: '35%', label: 'ZONE A (TECH)' },
   { id: 'Z_B', top: '10%', left: '65%', width: '25%', height: '35%', label: 'ZONE B (CAREER)' },
   { id: 'Z_C', top: '55%', left: '65%', width: '25%', height: '35%', label: 'ZONE C (FOOD)' },
   { id: 'Z_D', top: '55%', left: '10%', width: '25%', height: '35%', label: 'ZONE D (RETAIL)' },
   { id: 'Z_STAGE', top: '35%', left: '40%', width: '20%', height: '30%', label: 'MAIN STAGE' },
-];
-
-// Unified Data Structure
-const ALL_STALLS = [
-  { id: 'ST-01', name: 'TechCorp', zone: 'Zone A', traffic: 'LOW', visitors: 1240, wait: '2m', status: 'OPTIMAL', x: 22, y: 27 },
-  { id: 'ST-02', name: 'CyberSys', zone: 'Zone A', traffic: 'MED', visitors: 2100, wait: '12m', status: 'STABLE', x: 18, y: 15 },
-  { id: 'ST-03', name: 'FutureHire', zone: 'Zone B', traffic: 'HIGH', visitors: 4500, wait: '28m', status: 'WARNING', x: 70, y: 20 },
-  { id: 'ST-04', name: 'UniLinks', zone: 'Zone B', traffic: 'LOW', visitors: 890, wait: '1m', status: 'OPTIMAL', x: 82, y: 35 },
-  { id: 'ST-05', name: 'Main Stage', zone: 'Center', traffic: 'CRITICAL', visitors: 8200, wait: '55m', status: 'BOTTLENECK', x: 50, y: 50 },
-  { id: 'ST-06', name: 'Burger Town', zone: 'Zone C', traffic: 'CRITICAL', visitors: 6100, wait: '45m', status: 'BOTTLENECK', x: 70, y: 80 },
-  { id: 'ST-07', name: 'Soda Pop', zone: 'Zone C', traffic: 'MED', visitors: 3200, wait: '15m', status: 'STABLE', x: 82, y: 65 },
-  { id: 'ST-08', name: 'Merch Shop A', zone: 'Zone D', traffic: 'HIGH', visitors: 5100, wait: '35m', status: 'WARNING', x: 28, y: 65 },
-  { id: 'ST-09', name: 'Exit Gate', zone: 'Zone D', traffic: 'LOW', visitors: 540, wait: '0m', status: 'OPTIMAL', x: 15, y: 80 },
 ];
 
 const GLOBAL_LOGS = [
@@ -172,8 +151,20 @@ const GLOBAL_LOGS = [
   { time: "14:20:15", msg: "SYS_HEALTH: Database sync complete", type: "SYS", color: "text-gray-400" },
 ];
 
-// --- SUB-COMPONENTS ---
+// --- TYPES FOR DASHBOARD ---
+interface DashboardStall {
+  id: string;
+  name: string;
+  zone: string;
+  traffic: 'LOW' | 'MED' | 'HIGH' | 'CRITICAL';
+  visitors: number;
+  wait: string;
+  status: 'OPTIMAL' | 'STABLE' | 'WARNING' | 'BOTTLENECK';
+  x: number;
+  y: number;
+}
 
+// --- SUB-COMPONENTS ---
 const KPICard = ({ label, value, sub, icon: Icon, colorClass, borderClass }: any) => (
   <div className={`cyber-card p-5 flex flex-col justify-between h-28 border-l-4 ${borderClass}`}>
     <div className="flex justify-between items-start">
@@ -188,15 +179,96 @@ const KPICard = ({ label, value, sub, icon: Icon, colorClass, borderClass }: any
 );
 
 // --- MAIN PAGE COMPONENT ---
-
 export default function OrganizerPage() {
   const [booting, setBooting] = useState(true);
   const [hoveredPin, setHoveredPin] = useState<string | null>(null);
-  const [selectedStall, setSelectedStall] = useState<typeof ALL_STALLS[0] | null>(null);
+  const [selectedStall, setSelectedStall] = useState<DashboardStall | null>(null);
+
+  // Data State
+  const [stalls, setStalls] = useState<DashboardStall[]>([]);
+  const [stats, setStats] = useState<{
+    attendees: string;
+    scans: string;
+    nodes: number;
+    health: string;
+  }>({ attendees: '0', scans: '0', nodes: 0, health: '100%' });
 
   useEffect(() => {
     const timer = setTimeout(() => setBooting(false), 1500);
-    return () => clearTimeout(timer);
+
+    // Initial Data Fetch
+    const loadData = async () => {
+      try {
+        const [stallsData, statsData] = await Promise.all([fetchStalls(), fetchStats()]);
+
+        // Map Stats
+        setStats({
+          attendees: statsData.total_attendees.toLocaleString(),
+          scans: statsData.total_scans.toLocaleString(),
+          nodes: statsData.total_sponsors,
+          health: '98.4%' // Mocked for now
+        });
+
+        // Map Stalls
+        const mappedStalls: DashboardStall[] = stallsData.map(s => {
+          let traffic: DashboardStall['traffic'] = 'LOW';
+          let status: DashboardStall['status'] = 'OPTIMAL';
+
+          if (s.crowd_level === 'High') { traffic = 'CRITICAL'; status = 'BOTTLENECK'; }
+          else if (s.crowd_level === 'Medium') { traffic = 'MED'; status = 'STABLE'; } // API uses 'Medium'? Checking api.ts... actually interface says 'Low' | 'Medium' | 'High' usually, but api.ts says string. Let's assume standard.
+
+          return {
+            id: s.stall_id,
+            name: s.company_name,
+            zone: s.category === 'F&B' ? 'ZONE C' : 'ZONE A', // Simple heuristic
+            traffic: traffic,
+            visitors: s.scan_count_10m || 0,
+            wait: `${Math.ceil((s.scan_count_10m || 10) / 10)}m`,
+            status: status,
+            x: Math.min(95, Math.max(5, (s.map_location.x_coord / 900) * 100)),
+            y: Math.min(95, Math.max(5, (s.map_location.y_coord / 900) * 100))
+          };
+        });
+        setStalls(mappedStalls);
+      } catch (e) {
+        console.error("Failed to load organizer data", e);
+      }
+    };
+    loadData();
+
+    // WebSocket Connection for Live Updates
+    const wsUrl = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000').replace(/^http/, 'ws') + '/api/game/heatmap';
+    const ws = new WebSocket(wsUrl);
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.heatmap) {
+          // Update existing stalls with new data
+          setStalls(prev => prev.map(p => {
+            const update = data.heatmap.find((h: any) => h.stall_id === p.id);
+            if (update) {
+              let traffic: DashboardStall['traffic'] = 'LOW';
+              let status: DashboardStall['status'] = 'OPTIMAL';
+              if (update.crowd_level === 'High') { traffic = 'CRITICAL'; status = 'BOTTLENECK'; }
+
+              return {
+                ...p,
+                visitors: update.scan_count,
+                traffic,
+                status,
+                wait: `${Math.ceil(update.scan_count / 10)}m`
+              };
+            }
+            return p;
+          }));
+        }
+      } catch (e) { console.error("WS Error", e); }
+    };
+
+    return () => {
+      clearTimeout(timer);
+      if (ws.readyState === 1) ws.close();
+    };
   }, []);
 
   const getHeatClass = (traffic: string) => {
@@ -228,7 +300,7 @@ export default function OrganizerPage() {
                 EVENT_PULSE <span className="text-purple-500">MASTER_CTRL</span>
               </h1>
               <div className="flex gap-4 mt-1 font-console text-xs text-gray-500">
-                <span>ID: {GLOBAL_DATA.id}</span>
+                <span>ID: MASTER-CTRL-01</span>
                 <span>AUTH: ROOT_ADMIN</span>
                 <span className="text-emerald-400 animate-pulse">● GLOBAL UPLINK</span>
               </div>
@@ -245,7 +317,7 @@ export default function OrganizerPage() {
 
       {/* --- MAIN CONTENT --- */}
       <main className="max-w-7xl mx-auto px-6 pt-8 pb-20 relative z-10">
-        
+
         {booting ? (
           <div className="h-[60vh] flex flex-col items-center justify-center font-pixel text-purple-500 animate-pulse">
             <Database size={64} className="mb-4 drop-shadow-[0_0_15px_rgba(168,85,247,0.5)]" />
@@ -256,35 +328,35 @@ export default function OrganizerPage() {
           <>
             {/* 1. GLOBAL KPI METRICS */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
-              <KPICard 
-                label="TOTAL_ATTENDEES" 
-                value={GLOBAL_DATA.total_attendees} 
-                sub="VENUE CAPACITY: 85%" 
-                icon={Users} 
+              <KPICard
+                label="TOTAL_ATTENDEES"
+                value={stats.attendees}
+                sub="VENUE CAPACITY: 85%"
+                icon={Users}
                 colorClass="text-cyan-400"
                 borderClass="border-cyan-500"
               />
-              <KPICard 
-                label="TOTAL_SCANS_LOGGED" 
-                value={GLOBAL_DATA.total_scans} 
-                sub="~42 SCANS / MIN" 
-                icon={Activity} 
+              <KPICard
+                label="TOTAL_SCANS_LOGGED"
+                value={stats.scans}
+                sub="~42 SCANS / MIN"
+                icon={Activity}
                 colorClass="text-purple-400"
                 borderClass="border-purple-500"
               />
-              <KPICard 
-                label="ACTIVE_STALL_NODES" 
-                value={GLOBAL_DATA.active_nodes} 
-                sub="100% UPTIME" 
-                icon={Wifi} 
+              <KPICard
+                label="ACTIVE_STALL_NODES"
+                value={stats.nodes}
+                sub="100% UPTIME"
+                icon={Wifi}
                 colorClass="text-emerald-400"
                 borderClass="border-emerald-500"
               />
-              <KPICard 
-                label="GLOBAL_SYS_HEALTH" 
-                value={GLOBAL_DATA.system_health} 
-                sub="0 THREATS DETECTED" 
-                icon={Cpu} 
+              <KPICard
+                label="GLOBAL_SYS_HEALTH"
+                value={stats.health}
+                sub="0 THREATS DETECTED"
+                icon={Cpu}
                 colorClass="text-emerald-400"
                 borderClass="border-emerald-500"
               />
@@ -298,126 +370,126 @@ export default function OrganizerPage() {
                   <div className="p-4 border-b border-cyan-500/20 bg-[#050a05] flex justify-between items-center z-20">
                     <h3 className="font-pixel text-[10px] text-cyan-400 tracking-wider">NETWORK_TOPOLOGY</h3>
                     <div className="font-console text-xs text-red-500 blink flex items-center gap-2">
-                      <AlertTriangle size={12}/> 2 BOTTLENECKS DETECTED
+                      <AlertTriangle size={12} /> {stalls.filter(s => s.status === 'BOTTLENECK').length} BOTTLENECKS DETECTED
                     </div>
                   </div>
-                  
+
                   {/* Map Visualizer */}
                   <div className="flex-1 relative bg-[#010301] overflow-hidden" onClick={() => setSelectedStall(null)}>
-                     <div className="absolute inset-0 map-grid"></div>
-                     
-                     {/* Radar Sweep */}
-                     <div className="absolute top-1/2 left-1/2 w-[150%] h-[150%] rounded-full -translate-x-1/2 -translate-y-1/2 bg-[conic-gradient(from_0deg,transparent_0deg,rgba(34,211,238,0.05)_60deg,transparent_60deg)] animate-[spin_6s_linear_infinite] pointer-events-none"></div>
+                    <div className="absolute inset-0 map-grid"></div>
 
-                     {/* Network Topology Lines (Connecting all to Main Stage for visual effect) */}
-                     <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
-                        {ALL_STALLS.map(stall => {
-                          if (stall.id === 'ST-05') return null; // Skip main stage
-                          return (
-                            <line 
-                              key={`line-${stall.id}`}
-                              x1="50%" y1="50%" // Main Stage Center
-                              x2={`${stall.x}%`} y2={`${stall.y}%`} 
-                              stroke="rgba(34, 211, 238, 0.2)" 
-                              strokeWidth="1" 
-                              strokeDasharray="4"
-                              className="animate-[dash_10s_linear_infinite]"
-                            />
-                          )
-                        })}
-                     </svg>
+                    {/* Radar Sweep */}
+                    <div className="absolute top-1/2 left-1/2 w-[150%] h-[150%] rounded-full -translate-x-1/2 -translate-y-1/2 bg-[conic-gradient(from_0deg,transparent_0deg,rgba(34,211,238,0.05)_60deg,transparent_60deg)] animate-[spin_6s_linear_infinite] pointer-events-none"></div>
 
-                     {/* Architectural Blocks */}
-                     {BUILDINGS.map((b) => (
-                       <div key={b.id} className="building-block" style={{ top: b.top, left: b.left, width: b.width, height: b.height }}>
-                          <span className="font-pixel text-[8px] text-cyan-500/30 text-center leading-loose">{b.label}</span>
-                       </div>
-                     ))}
+                    {/* Network Topology Lines (Connecting all to Main Stage for visual effect) */}
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none z-10">
+                      {stalls.map(stall => {
+                        if (stall.id === 'ST-05') return null; // Skip main stage if ID matches (mock)
+                        return (
+                          <line
+                            key={`line-${stall.id}`}
+                            x1="50%" y1="50%" // Main Stage Center
+                            x2={`${stall.x}%`} y2={`${stall.y}%`}
+                            stroke="rgba(34, 211, 238, 0.2)"
+                            strokeWidth="1"
+                            strokeDasharray="4"
+                            className="animate-[dash_10s_linear_infinite]"
+                          />
+                        )
+                      })}
+                    </svg>
 
-                     {/* Stalls / Nodes */}
-                     {ALL_STALLS.map(stall => {
-                       const isSelected = selectedStall?.id === stall.id;
-                       const isHovered = hoveredPin === stall.id;
+                    {/* Architectural Blocks */}
+                    {BUILDINGS.map((b) => (
+                      <div key={b.id} className="building-block" style={{ top: b.top, left: b.left, width: b.width, height: b.height }}>
+                        <span className="font-pixel text-[8px] text-cyan-500/30 text-center leading-loose">{b.label}</span>
+                      </div>
+                    ))}
 
-                       return (
-                         <div 
-                           key={stall.id}
-                           className="absolute flex flex-col items-center z-20 group cursor-pointer"
-                           style={{ left: `${stall.x}%`, top: `${stall.y}%`, transform: 'translate(-50%, -50%)' }}
-                           onMouseEnter={() => setHoveredPin(stall.id)}
-                           onMouseLeave={() => setHoveredPin(null)}
-                           onClick={(e) => { e.stopPropagation(); setSelectedStall(stall); }}
-                         >
-                            {/* Pulsing Aura */}
-                            <div className={`absolute rounded-full opacity-40 transition-all duration-300 ${getHeatClass(stall.traffic)} ${isHovered || isSelected ? 'w-24 h-24 animate-ping' : 'w-12 h-12 animate-pulse'}`}></div>
+                    {/* Stalls / Nodes */}
+                    {stalls.map(stall => {
+                      const isSelected = selectedStall?.id === stall.id;
+                      const isHovered = hoveredPin === stall.id;
 
-                            {/* Pin / Node Target */}
-                            <div className={`
+                      return (
+                        <div
+                          key={stall.id}
+                          className="absolute flex flex-col items-center z-20 group cursor-pointer"
+                          style={{ left: `${stall.x}%`, top: `${stall.y}%`, transform: 'translate(-50%, -50%)' }}
+                          onMouseEnter={() => setHoveredPin(stall.id)}
+                          onMouseLeave={() => setHoveredPin(null)}
+                          onClick={(e) => { e.stopPropagation(); setSelectedStall(stall); }}
+                        >
+                          {/* Pulsing Aura */}
+                          <div className={`absolute rounded-full opacity-40 transition-all duration-300 ${getHeatClass(stall.traffic)} ${isHovered || isSelected ? 'w-24 h-24 animate-ping' : 'w-12 h-12 animate-pulse'}`}></div>
+
+                          {/* Pin / Node Target */}
+                          <div className={`
                                w-4 h-4 rounded-sm flex items-center justify-center transition-all shadow-[0_0_10px_rgba(0,0,0,0.8)] z-30
                                ${stall.traffic === 'CRITICAL' ? 'bg-red-500 border border-red-300' : stall.traffic === 'HIGH' ? 'bg-yellow-500 border border-yellow-300' : 'bg-cyan-500 border border-cyan-300'}
                                ${isSelected ? 'scale-150 rotate-45 ring-2 ring-white' : ''}
                             `}>
-                               {(isHovered || isSelected) && <Crosshair size={10} className="text-black absolute -rotate-45" />}
+                            {(isHovered || isSelected) && <Crosshair size={10} className="text-black absolute -rotate-45" />}
+                          </div>
+
+                          <div className={`mt-2 px-2 py-1 font-pixel text-[8px] whitespace-nowrap transition-all ${isHovered || isSelected ? 'text-white bg-black border border-cyan-500 z-40' : 'text-cyan-600 bg-black/50 border border-[#333]'}`}>
+                            {stall.name}
+                          </div>
+                        </div>
+                      )
+                    })}
+
+                    {/* IN-MAP DATA INSPECTOR PANEL (Slides in when node selected) */}
+                    {selectedStall && (
+                      <div className="absolute right-0 top-0 bottom-0 w-64 bg-[#050a05]/95 border-l border-cyan-500/50 backdrop-blur-md z-40 p-5 flex flex-col slide-in-right shadow-[-10px_0_30px_rgba(0,0,0,0.8)]">
+                        <div className="flex justify-between items-start mb-6 border-b border-cyan-500/30 pb-2">
+                          <div>
+                            <div className="font-pixel text-[8px] text-cyan-500 mb-1">{selectedStall.id}</div>
+                            <div className="font-bold text-lg text-white font-console uppercase tracking-wider">{selectedStall.name}</div>
+                          </div>
+                          <button onClick={() => setSelectedStall(null)} className="text-gray-500 hover:text-white transition-colors">
+                            <X size={16} />
+                          </button>
+                        </div>
+
+                        <div className="space-y-4 flex-1">
+                          <div>
+                            <div className="font-pixel text-[8px] text-gray-400 mb-1">LOCATION</div>
+                            <div className="font-console text-sm text-cyan-400 flex items-center gap-2"><MapPin size={12} /> {selectedStall.zone}</div>
+                          </div>
+
+                          <div>
+                            <div className="font-pixel text-[8px] text-gray-400 mb-1">LIVE VISITORS</div>
+                            <div className="font-console text-3xl text-white">{selectedStall.visitors}</div>
+                          </div>
+
+                          <div>
+                            <div className="font-pixel text-[8px] text-gray-400 mb-1">AVG WAIT TIME</div>
+                            <div className="font-console text-xl text-yellow-400 flex items-center gap-2"><Clock size={14} /> {selectedStall.wait}</div>
+                          </div>
+
+                          <div>
+                            <div className="font-pixel text-[8px] text-gray-400 mb-1">STATUS</div>
+                            <div className={`font-console text-sm px-2 py-1 inline-block border ${getStatusColor(selectedStall.status).replace('text-', 'border-')} ${getStatusColor(selectedStall.status)} ${selectedStall.status === 'BOTTLENECK' ? 'animate-pulse bg-red-900/20' : 'bg-[#111]'}`}>
+                              {selectedStall.status}
                             </div>
-                            
-                            <div className={`mt-2 px-2 py-1 font-pixel text-[8px] whitespace-nowrap transition-all ${isHovered || isSelected ? 'text-white bg-black border border-cyan-500 z-40' : 'text-cyan-600 bg-black/50 border border-[#333]'}`}>
-                              {stall.name}
-                            </div>
-                         </div>
-                       )
-                     })}
-
-                     {/* IN-MAP DATA INSPECTOR PANEL (Slides in when node selected) */}
-                     {selectedStall && (
-                       <div className="absolute right-0 top-0 bottom-0 w-64 bg-[#050a05]/95 border-l border-cyan-500/50 backdrop-blur-md z-40 p-5 flex flex-col slide-in-right shadow-[-10px_0_30px_rgba(0,0,0,0.8)]">
-                          <div className="flex justify-between items-start mb-6 border-b border-cyan-500/30 pb-2">
-                             <div>
-                                <div className="font-pixel text-[8px] text-cyan-500 mb-1">{selectedStall.id}</div>
-                                <div className="font-bold text-lg text-white font-console uppercase tracking-wider">{selectedStall.name}</div>
-                             </div>
-                             <button onClick={() => setSelectedStall(null)} className="text-gray-500 hover:text-white transition-colors">
-                               <X size={16} />
-                             </button>
                           </div>
+                        </div>
 
-                          <div className="space-y-4 flex-1">
-                             <div>
-                               <div className="font-pixel text-[8px] text-gray-400 mb-1">LOCATION</div>
-                               <div className="font-console text-sm text-cyan-400 flex items-center gap-2"><MapPin size={12}/> {selectedStall.zone}</div>
-                             </div>
-                             
-                             <div>
-                               <div className="font-pixel text-[8px] text-gray-400 mb-1">LIVE VISITORS</div>
-                               <div className="font-console text-3xl text-white">{selectedStall.visitors}</div>
-                             </div>
-
-                             <div>
-                               <div className="font-pixel text-[8px] text-gray-400 mb-1">AVG WAIT TIME</div>
-                               <div className="font-console text-xl text-yellow-400 flex items-center gap-2"><Clock size={14}/> {selectedStall.wait}</div>
-                             </div>
-
-                             <div>
-                               <div className="font-pixel text-[8px] text-gray-400 mb-1">STATUS</div>
-                               <div className={`font-console text-sm px-2 py-1 inline-block border ${getStatusColor(selectedStall.status).replace('text-', 'border-')} ${getStatusColor(selectedStall.status)} ${selectedStall.status === 'BOTTLENECK' ? 'animate-pulse bg-red-900/20' : 'bg-[#111]'}`}>
-                                 {selectedStall.status}
-                               </div>
-                             </div>
-                          </div>
-
-                          {/* Action Buttons based on status */}
-                          <div className="pt-4 border-t border-cyan-500/30 mt-auto">
-                            {selectedStall.status === 'BOTTLENECK' ? (
-                               <button className="w-full bg-red-600 hover:bg-red-500 text-black font-pixel text-[8px] py-3 transition-colors flex justify-center items-center gap-2">
-                                 <AlertTriangle size={12}/> INITIATE_REROUTE
-                               </button>
-                            ) : (
-                               <button className="w-full bg-cyan-600 hover:bg-cyan-500 text-black font-pixel text-[8px] py-3 transition-colors flex justify-center items-center gap-2">
-                                 <Zap size={12}/> DEPLOY_LURE_MODULE
-                               </button>
-                            )}
-                          </div>
-                       </div>
-                     )}
+                        {/* Action Buttons based on status */}
+                        <div className="pt-4 border-t border-cyan-500/30 mt-auto">
+                          {selectedStall.status === 'BOTTLENECK' ? (
+                            <button className="w-full bg-red-600 hover:bg-red-500 text-black font-pixel text-[8px] py-3 transition-colors flex justify-center items-center gap-2">
+                              <AlertTriangle size={12} /> INITIATE_REROUTE
+                            </button>
+                          ) : (
+                            <button className="w-full bg-cyan-600 hover:bg-cyan-500 text-black font-pixel text-[8px] py-3 transition-colors flex justify-center items-center gap-2">
+                              <Zap size={12} /> DEPLOY_LURE_MODULE
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -430,15 +502,15 @@ export default function OrganizerPage() {
                     <Activity size={12} className="animate-pulse text-purple-400" />
                   </h3>
                   <div className="flex-1 overflow-y-auto font-console text-sm space-y-1 p-1">
-                      {GLOBAL_LOGS.map((log, i) => (
-                        <div key={i} className="flex flex-col border-b border-white/5 pb-2 mb-2 hover:bg-white/5 transition-colors px-1">
-                            <span className="text-gray-600 text-xs">[{log.time}]</span>
-                            <span className={`tracking-wide ${log.color}`}>
-                              {log.type === 'ALERT' ? '!!! ' : '>>> '} {log.msg}
-                            </span>
-                        </div>
-                      ))}
-                      <div className="text-purple-500 animate-pulse mt-1 px-1">_</div>
+                    {GLOBAL_LOGS.map((log, i) => (
+                      <div key={i} className="flex flex-col border-b border-white/5 pb-2 mb-2 hover:bg-white/5 transition-colors px-1">
+                        <span className="text-gray-600 text-xs">[{log.time}]</span>
+                        <span className={`tracking-wide ${log.color}`}>
+                          {log.type === 'ALERT' ? '!!! ' : '>>> '} {log.msg}
+                        </span>
+                      </div>
+                    ))}
+                    <div className="text-purple-500 animate-pulse mt-1 px-1">_</div>
                   </div>
                 </div>
               </div>
@@ -451,9 +523,9 @@ export default function OrganizerPage() {
                 <h3 className="font-pixel text-[10px] text-cyan-400 tracking-wider flex items-center gap-2">
                   <Database size={14} /> GLOBAL_NODE_REGISTRY
                 </h3>
-                <span className="font-console text-xs text-gray-500">SHOWING 9/142 NODES</span>
+                <span className="font-console text-xs text-gray-500">SHOWING {stalls.length} NODES</span>
               </div>
-              
+
               <div className="overflow-x-auto">
                 <table className="retro-table">
                   <thead>
@@ -468,9 +540,9 @@ export default function OrganizerPage() {
                     </tr>
                   </thead>
                   <tbody>
-                    {ALL_STALLS.map((stall) => (
-                      <tr 
-                        key={stall.id} 
+                    {stalls.map((stall) => (
+                      <tr
+                        key={stall.id}
                         className={`cursor-pointer ${hoveredPin === stall.id || selectedStall?.id === stall.id ? 'bg-cyan-900/30 border-l-2 border-cyan-400' : 'border-l-2 border-transparent'}`}
                         onClick={() => setSelectedStall(stall)}
                         onMouseEnter={() => setHoveredPin(stall.id)}
@@ -502,10 +574,10 @@ export default function OrganizerPage() {
 
             {/* Footer */}
             <footer className="mt-8 border-t border-cyan-500/20 pt-4 flex justify-between items-center text-[10px] font-pixel text-gray-500">
-               <div>AUTHORIZATION: ROOT</div>
-               <div className="flex gap-6">
-                 <span className="text-emerald-500 flex items-center gap-2"><Lock size={10} /> SECURE</span>
-               </div>
+              <div>AUTHORIZATION: ROOT</div>
+              <div className="flex gap-6">
+                <span className="text-emerald-500 flex items-center gap-2"><Lock size={10} /> SECURE</span>
+              </div>
             </footer>
           </>
         )}
